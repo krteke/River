@@ -1,0 +1,48 @@
+[server]
+listen = "0.0.0.0:8080"
+
+[[roots]]
+id = "media"
+name = "Media"
+path = "/data/media"
+allow_symlink = false
+
+[ffmpeg]
+ffmpeg_path = "/usr/bin/ffmpeg"
+ffprobe_path = "/usr/bin/ffprobe"
+max_concurrent_jobs = 1
+
+[transcode]
+temp_dir = "/tmp/lightfm-transcode"
+idle_timeout_seconds = 90
+segment_duration_seconds = 6
+
+[playback]
+direct_play_max_bitrate = 12000000
+direct_play_max_width = 1920
+direct_play_max_height = 1080
+default_profile = "1080p_8m"
+
+[[profiles]]
+name = "1080p_8m"
+container = "hls_ts"
+video_codec = "libx264"
+width = 1920
+video_bitrate = "8000k"
+audio_codec = "aac"
+audio_bitrate = "160k"
+audio_channels = 2
+preset = "veryfast"
+segment_duration = 6
+
+[[profiles]]
+name = "720p_4m"
+container = "hls_ts"
+video_codec = "libx264"
+width = 1280
+video_bitrate = "4000k"
+audio_codec = "aac"
+audio_bitrate = "128k"
+audio_channels = 2
+preset = "veryfast"
+segment_duration = 6
