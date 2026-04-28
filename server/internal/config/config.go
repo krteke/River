@@ -9,6 +9,14 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// type SymlinkPolicy string
+
+// const (
+// 	SymlinkPolicyDeny          SymlinkPolicy = "deny"
+// 	SymlinkPolicyAllowExternal SymlinkPolicy = "allow_external"
+// 	SymlinkPolicyWithinRoot    SymlinkPolicy = "within_root"
+// )
+
 type Config struct {
 	Server    ServerConfig    `toml:"server"`
 	Roots     []RootConfig    `toml:"roots"`
@@ -23,10 +31,10 @@ type ServerConfig struct {
 }
 
 type RootConfig struct {
-	ID           string `toml:"id"`
-	Name         string `toml:"name"`
-	Path         string `toml:"path"`
-	AllowSymlink bool   `toml:"allow_symlink"`
+	ID   string `toml:"id"`
+	Name string `toml:"name"`
+	Path string `toml:"path"`
+	// SymlinkPolicy string `toml:"symlink_policy"`
 }
 
 type FFmpegConfig struct {
