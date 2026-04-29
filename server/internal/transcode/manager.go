@@ -43,3 +43,12 @@ func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
 func (m *Manager) StartCleanupLoop(ctx context.Context) {
 	// todo
 }
+
+// func isHDR(video media.VideoTrack) bool {
+// 	transfer := strings.ToLower(video.ColorTransfer)
+// 	primaries := strings.ToLower(video.ColorPrimaries)
+
+// 	return transfer == "smpte2084" ||
+// 		transfer == "arib-std-b67" ||
+// 		primaries == "bt2020"
+// }

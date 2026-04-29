@@ -85,3 +85,16 @@ func NewService(rootConfigs []config.RootConfig) (*Service, error) {
 
 	return &Service{roots: roots}, nil
 }
+
+func (s *Service) Roots() map[string]Root {
+	return s.roots
+}
+
+// func (s *Service) ListRoots() []Root {
+// 	roots := make([]Root, 0, len(s.roots))
+// 	for _, root := range s.roots {
+// 		roots = append(roots, root)
+// 	}
+
+// 	return roots
+// }

@@ -186,12 +186,3 @@ func parseRational(value string) *Rational {
 
 	return r
 }
-
-// func isHDR(video VideoTrack) bool {
-// 	transfer := strings.ToLower(video.ColorTransfer)
-// 	primaries := strings.ToLower(video.ColorPrimaries)
-
-// 	return transfer == "smpte2084" ||
-// 		transfer == "arib-std-b67" ||
-// 		primaries == "bt2020"
-// }
