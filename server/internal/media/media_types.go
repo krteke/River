@@ -28,7 +28,6 @@ type VideoTrack struct {
 	RFrameRate     *Rational `json:"r_frame_rate,omitempty"`
 	TimeBase       *Rational `json:"time_base,omitempty"`
 	Duration       float64   `json:"duration,omitempty"`
-	HDR            bool      `json:"hdr,omitempty"`
 }
 
 type AudioTrack struct {

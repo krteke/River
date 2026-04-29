@@ -1,10 +1,10 @@
 [server]
-listen = "0.0.0.0:8080"
+listen = "127.0.0.1:8080"
 
 [[roots]]
-id = "media"
-name = "Media"
-path = "/data/media"
+id = "data"
+name = "Data"
+path = "/mnt"
 # symlink_policy = "deny" # "deny" / "allow_external" / "within_root"
 
 [ffmpeg]

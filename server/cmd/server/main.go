@@ -1,16 +1,24 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/krteke/River/internal/api"
 	"github.com/krteke/River/internal/config"
 	filesystem "github.com/krteke/River/internal/fs"
+	"github.com/krteke/River/internal/media"
+	"github.com/krteke/River/internal/transcode"
 )
 
 func main() {
-	configPath := flag.String("c", "config/config.toml", "path to config file")
+	configPath := flag.String("c", "configs/config.toml", "path to config file")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -20,10 +28,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := filesystem.NewService(cfg.Roots)
+	fileService, err := filesystem.NewService(cfg.Roots)
 	if err != nil {
 		logger.Error("failed to init filesystem service", "error", err)
 		os.Exit(1)
 	}
 
+	mediaService := media.NewService(cfg.FFmpeg.FFprobePath)
+
+	transcodeManager := transcode.NewManager(cfg, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	transcodeManager.StartCleanupLoop(ctx)
+
+	apiServer := api.NewServer(*cfg, fileService, mediaService, transcodeManager, logger)
+	httpServer := &http.Server{
+		Addr:              cfg.Server.Listen,
+		Handler:           apiServer.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
+
+	logger.Info("server start", "listen", cfg.Server.Listen)
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		logger.Error("server stopped", "error", err)
+		os.Exit(1)
+	}
 }

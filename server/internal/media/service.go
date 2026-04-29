@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/krteke/River/internal/config"
 )
 
 const defaultProbeTimeout = 30 * time.Second
@@ -21,7 +19,7 @@ type Service struct {
 	ffprobePath string
 }
 
-func NewService(ffprobePath string, playback config.PlaybackConfig) *Service {
+func NewService(ffprobePath string) *Service {
 	return &Service{ffprobePath: ffprobePath}
 }
 
@@ -113,7 +111,6 @@ func normalize(raw ffprobeOutput) MediaInfo {
 				TimeBase:       parseRational(stream.TimeBase),
 				Duration:       parseFloat(stream.Duration),
 			}
-			track.HDR = isHDR(track)
 			media.Tracks.Video = append(media.Tracks.Video, track)
 		case "audio":
 			media.Tracks.Audio = append(media.Tracks.Audio, AudioTrack{
@@ -190,11 +187,11 @@ func parseRational(value string) *Rational {
 	return r
 }
 
-func isHDR(video VideoTrack) bool {
-	transfer := strings.ToLower(video.ColorTransfer)
-	primaries := strings.ToLower(video.ColorPrimaries)
+// func isHDR(video VideoTrack) bool {
+// 	transfer := strings.ToLower(video.ColorTransfer)
+// 	primaries := strings.ToLower(video.ColorPrimaries)
 
-	return transfer == "smpte2084" ||
-		transfer == "arib-std-b67" ||
-		primaries == "bt2020"
-}
+// 	return transfer == "smpte2084" ||
+// 		transfer == "arib-std-b67" ||
+// 		primaries == "bt2020"
+// }
