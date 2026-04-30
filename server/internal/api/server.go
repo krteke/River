@@ -37,7 +37,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/roots", s.rootsHandler)
 	mux.HandleFunc("/api/list", s.listHandler)
 
-	return mux
+	return s.withLog(mux)
 }
 
 // example:
@@ -74,6 +74,8 @@ func (s *Server) rootsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, rootResponses)
 }
 
+// example:
+// curl "localhost:8080/api/list?root=data&path=path/to/files"
 func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	path := r.URL.Query().Get("path")
@@ -112,6 +114,14 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	}
 
 	writeJson(w, status, map[string]string{"error": code, "message": message})
+}
+
+func (s *Server) withLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.logger.Info("request", "method", r.Method, "url", r.URL.String())
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJson(w http.ResponseWriter, status int, v any) {
