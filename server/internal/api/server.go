@@ -2,8 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"log/slog"
 	"net/http"
 
@@ -33,9 +31,10 @@ func NewServer(cfg config.Config, fileService *filesystem.Service, mediaService 
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/health", s.healthHandler)
-	mux.HandleFunc("/api/roots", s.rootsHandler)
-	mux.HandleFunc("/api/list", s.listHandler)
+	mux.HandleFunc("GET /api/health", s.healthHandler)
+	mux.HandleFunc("GET /api/roots", s.rootsHandler)
+	mux.HandleFunc("GET /api/list", s.listHandler)
+	mux.HandleFunc("GET /api/file", s.fileHandler)
 
 	return s.withLog(mux)
 }
@@ -93,27 +92,21 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, list)
 }
 
-func (s *Server) writeError(w http.ResponseWriter, err error) {
-	var code string
-	var status int
-	var message string
+func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	path := r.URL.Query().Get("path")
 
-	switch {
-	case errors.Is(err, filesystem.ErrRootNotFound):
-		code = "root_not_found"
-		status = http.StatusNotFound
-		message = "Root not found"
-	case errors.Is(err, fs.ErrNotExist):
-		code = "path_not_exist"
-		status = http.StatusNotFound
-		message = "Path not exist"
-	default:
-		code = "internal_server_error"
-		status = http.StatusInternalServerError
-		message = "Internal Server Error"
+	s.logger.Info("received file request", "root", root, "path", path)
+
+	file, info, err := s.fileService.File(root, path)
+	if err != nil {
+		s.logger.Error("failed to get file", "root", root, "path", path, "error", err)
+		s.writeError(w, err)
+		return
 	}
 
-	writeJson(w, status, map[string]string{"error": code, "message": message})
+	w.Header().Set("Content-Type", info.Mime)
+	http.ServeContent(w, r, info.Name, info.ModTime, file)
 }
 
 func (s *Server) withLog(next http.Handler) http.Handler {

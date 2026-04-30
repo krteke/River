@@ -3,6 +3,7 @@ package filesystem
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,6 +23,7 @@ const (
 var (
 	ErrRootNotFound = errors.New("root not found")
 	ErrNotDirectory = errors.New("path is not a directory")
+	ErrNotAFile     = errors.New("path is not a file")
 )
 
 type Service struct {
@@ -102,6 +104,31 @@ func (s *Service) List(root string, path string) (*ListResponse, error) {
 	return listResponse, nil
 }
 
+func (s *Service) File(root string, path string) (*os.File, *FileInfo, error) {
+	resolved, err := s.resolve(root, path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if resolved.Info.IsDir() {
+		return nil, nil, ErrNotAFile
+	}
+
+	file, err := os.Open(resolved.AbsPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	info := &FileInfo{
+		Mime:    ContentType(resolved.AbsPath),
+		Name:    resolved.Info.Name(),
+		ModTime: resolved.Info.ModTime(),
+	}
+
+	return file, info, nil
+}
+
 func (s *Service) resolve(root string, path string) (*ResolvedPath, error) {
 	r, ok := s.roots[root]
 	if !ok {
@@ -123,6 +150,20 @@ func (s *Service) resolve(root string, path string) (*ResolvedPath, error) {
 	}
 
 	return resolvedPath, nil
+}
+
+func ContentType(name string) string {
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		return ct
+	}
+	switch typeForName(name) {
+	case TypeText:
+		return "text/plain; charset=utf-8"
+	case TypeVideo:
+		return "application/octet-stream"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func CleanPath(p string) string {

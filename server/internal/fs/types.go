@@ -1,6 +1,9 @@
 package filesystem
 
-import "os"
+import (
+	"os"
+	"time"
+)
 
 type Root struct {
 	ID       string
@@ -29,4 +32,10 @@ type ListItem struct {
 	Type  string `json:"type"`
 	Size  int64  `json:"size"`
 	MTime int64  `json:"mtime"`
+}
+
+type FileInfo struct {
+	Mime    string
+	Name    string
+	ModTime time.Time
 }
