@@ -83,19 +83,35 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := s.fileService.List(root, path)
 	if err != nil {
 		s.logger.Error("failed to list", "root", root, "path", path, "error", err)
-
-		if errors.Is(err, filesystem.ErrRootNotFound) {
-			writeJson(w, http.StatusNotFound, map[string]string{"error": "Root not found"})
-		} else if errors.Is(err, fs.ErrNotExist) {
-			writeJson(w, http.StatusNotFound, map[string]string{"error": "Path not exist"})
-		} else {
-			writeJson(w, http.StatusInternalServerError, map[string]string{"error": "Internal Server Error: failed to list"})
-		}
+		s.writeError(w, err)
 
 		return
 	}
 
 	writeJson(w, http.StatusOK, list)
+}
+
+func (s *Server) writeError(w http.ResponseWriter, err error) {
+	var code string
+	var status int
+	var message string
+
+	switch {
+	case errors.Is(err, filesystem.ErrRootNotFound):
+		code = "root_not_found"
+		status = http.StatusNotFound
+		message = "Root not found"
+	case errors.Is(err, fs.ErrNotExist):
+		code = "path_not_exist"
+		status = http.StatusNotFound
+		message = "Path not exist"
+	default:
+		code = "internal_server_error"
+		status = http.StatusInternalServerError
+		message = "Internal Server Error"
+	}
+
+	writeJson(w, status, map[string]string{"error": code, "message": message})
 }
 
 func writeJson(w http.ResponseWriter, status int, v any) {
