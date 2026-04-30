@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
@@ -33,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.healthHandler)
 	mux.HandleFunc("/api/roots", s.rootsHandler)
+	mux.HandleFunc("/api/list", s.listHandler)
 
 	return mux
 }
@@ -50,6 +53,8 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 //
 // [{"id":"data","name":"Data"}]
 func (s *Server) rootsHandler(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("received roots request")
+
 	type RootResponse struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -67,6 +72,30 @@ func (s *Server) rootsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJson(w, http.StatusOK, rootResponses)
+}
+
+func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	path := r.URL.Query().Get("path")
+
+	s.logger.Info("received list request", "root", root, "path", path)
+
+	list, err := s.fileService.List(root, path)
+	if err != nil {
+		s.logger.Error("failed to list", "root", root, "path", path, "error", err)
+
+		if errors.Is(err, filesystem.ErrRootNotFound) {
+			writeJson(w, http.StatusNotFound, map[string]string{"error": "Root not found"})
+		} else if errors.Is(err, fs.ErrNotExist) {
+			writeJson(w, http.StatusNotFound, map[string]string{"error": "Path not exist"})
+		} else {
+			writeJson(w, http.StatusInternalServerError, map[string]string{"error": "Internal Server Error: failed to list"})
+		}
+
+		return
+	}
+
+	writeJson(w, http.StatusOK, list)
 }
 
 func writeJson(w http.ResponseWriter, status int, v any) {
