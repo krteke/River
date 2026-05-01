@@ -3,7 +3,6 @@ package transcode
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 
 	"github.com/krteke/River/internal/config"
@@ -21,12 +20,11 @@ type StreamSession struct {
 type Manager struct {
 	cfg      *config.Config
 	profiles map[string]config.ProfileConfig
-	logger   *slog.Logger
 	mu       sync.Mutex
 	sessions map[string]*StreamSession
 }
 
-func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
+func NewManager(cfg *config.Config) *Manager {
 	profiles := make(map[string]config.ProfileConfig, len(cfg.Profiles))
 	for _, profile := range cfg.Profiles {
 		profiles[profile.Name] = profile
@@ -35,7 +33,6 @@ func NewManager(cfg *config.Config, logger *slog.Logger) *Manager {
 	return &Manager{
 		cfg:      cfg,
 		profiles: profiles,
-		logger:   logger,
 		sessions: make(map[string]*StreamSession),
 	}
 }

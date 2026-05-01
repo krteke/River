@@ -26,6 +26,10 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		code = "path_not_a_file"
 		status = http.StatusNotFound
 		message = "Path is not a file"
+	case errors.Is(err, filesystem.ErrNotVideo):
+		code = "path_not_video"
+		status = http.StatusNotFound
+		message = "Path is not a video"
 	case errors.Is(err, fs.ErrPermission):
 		code = "permission_denied"
 		status = http.StatusForbidden

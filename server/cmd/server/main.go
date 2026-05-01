@@ -22,27 +22,28 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
+		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 
 	fileService, err := filesystem.NewService(cfg.Roots)
 	if err != nil {
-		logger.Error("failed to init filesystem service", "error", err)
+		slog.Error("failed to init filesystem service", "error", err)
 		os.Exit(1)
 	}
 
 	mediaService := media.NewService(cfg.FFmpeg.FFprobePath)
 
-	transcodeManager := transcode.NewManager(cfg, logger)
+	transcodeManager := transcode.NewManager(cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	transcodeManager.StartCleanupLoop(ctx)
 
-	apiServer := api.NewServer(*cfg, fileService, mediaService, transcodeManager, logger)
+	apiServer := api.NewServer(*cfg, fileService, mediaService, transcodeManager)
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           apiServer.Handler(),

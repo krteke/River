@@ -16,16 +16,14 @@ type Server struct {
 	fileService      *filesystem.Service
 	mediaService     *media.Service
 	transcodeManager *transcode.Manager
-	logger           *slog.Logger
 }
 
-func NewServer(cfg config.Config, fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager, logger *slog.Logger) *Server {
+func NewServer(cfg config.Config, fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager) *Server {
 	return &Server{
 		cfg:              cfg,
 		fileService:      fileService,
 		mediaService:     mediaService,
 		transcodeManager: transcodeManager,
-		logger:           logger,
 	}
 }
 
@@ -35,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/roots", s.rootsHandler)
 	mux.HandleFunc("GET /api/list", s.listHandler)
 	mux.HandleFunc("GET /api/file", s.fileHandler)
+	mux.HandleFunc("GET /api/video/info", s.videoInfoHandler)
 
 	return s.withLog(mux)
 }
@@ -52,7 +51,7 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 //
 // [{"id":"data","name":"Data"}]
 func (s *Server) rootsHandler(w http.ResponseWriter, r *http.Request) {
-	s.logger.Info("received roots request")
+	slog.Info("received roots request")
 
 	type RootResponse struct {
 		ID   string `json:"id"`
@@ -76,14 +75,11 @@ func (s *Server) rootsHandler(w http.ResponseWriter, r *http.Request) {
 // example:
 // curl "localhost:8080/api/list?root=data&path=path/to/files"
 func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
-	root := r.URL.Query().Get("root")
-	path := r.URL.Query().Get("path")
-
-	s.logger.Info("received list request", "root", root, "path", path)
+	root, path := parseQuery(r)
 
 	list, err := s.fileService.List(root, path)
 	if err != nil {
-		s.logger.Error("failed to list", "root", root, "path", path, "error", err)
+		slog.Error("failed to list", "root", root, "path", path, "error", err)
 		s.writeError(w, err)
 
 		return
@@ -93,14 +89,11 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
-	root := r.URL.Query().Get("root")
-	path := r.URL.Query().Get("path")
-
-	s.logger.Info("received file request", "root", root, "path", path)
+	root, path := parseQuery(r)
 
 	file, info, err := s.fileService.File(root, path)
 	if err != nil {
-		s.logger.Error("failed to get file", "root", root, "path", path, "error", err)
+		slog.Error("failed to get file", "root", root, "path", path, "error", err)
 		s.writeError(w, err)
 		return
 	}
@@ -109,12 +102,39 @@ func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, info.Name, info.ModTime, file)
 }
 
+func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
+	root, path := parseQuery(r)
+	resolved, err := s.fileService.ResolveVideo(root, path)
+	if err != nil {
+		slog.Error("failed to resolve video", "root", root, "path", path, "error", err)
+		s.writeError(w, err)
+		return
+	}
+
+	info, err := s.mediaService.Probe(r.Context(), resolved.AbsPath)
+	if err != nil {
+		slog.Error("failed to probe video", "root", root, "path", path, "error", err)
+		s.writeError(w, err)
+		return
+	}
+
+	writeJson(w, http.StatusOK, info)
+}
+
 func (s *Server) withLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.logger.Info("request", "method", r.Method, "url", r.URL.String())
+		slog.Info("request", "method", r.Method, "url", r.URL.String())
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func parseQuery(r *http.Request) (string, string) {
+	root := r.URL.Query().Get("root")
+	path := r.URL.Query().Get("path")
+	slog.Info("received list request", "root", root, "path", path)
+
+	return root, path
 }
 
 func writeJson(w http.ResponseWriter, status int, v any) {

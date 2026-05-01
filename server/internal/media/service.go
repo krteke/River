@@ -24,10 +24,6 @@ func NewService(ffprobePath string) *Service {
 }
 
 func (s *Service) Probe(ctx context.Context, filePath string) (*MediaInfo, error) {
-	if strings.TrimSpace(filePath) == "" {
-		return nil, fmt.Errorf("file path is not empty")
-	}
-
 	raw, err := s.probeRaw(ctx, filePath)
 	if err != nil {
 		return nil, err
