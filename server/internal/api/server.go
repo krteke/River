@@ -34,6 +34,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/list", s.listHandler)
 	mux.HandleFunc("GET /api/file", s.fileHandler)
 	mux.HandleFunc("GET /api/video/info", s.videoInfoHandler)
+	mux.HandleFunc("GET /api/video/play", s.videoPlayHandler)
 
 	return s.withLog(mux)
 }
@@ -97,6 +98,7 @@ func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	defer file.Close()
 
 	w.Header().Set("Content-Type", info.Mime)
 	http.ServeContent(w, r, info.Name, info.ModTime, file)
@@ -119,6 +121,10 @@ func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJson(w, http.StatusOK, info)
+}
+
+func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
+
 }
 
 func (s *Server) withLog(next http.Handler) http.Handler {

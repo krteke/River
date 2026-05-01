@@ -128,7 +128,6 @@ func (s *Service) File(root string, path string) (*os.File, *FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer file.Close()
 
 	info := &FileInfo{
 		Mime:    ContentType(resolved.AbsPath),
