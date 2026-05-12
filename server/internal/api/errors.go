@@ -3,12 +3,14 @@ package api
 import (
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net/http"
 
 	filesystem "github.com/krteke/River/internal/fs"
+	"github.com/krteke/River/internal/transcode"
 )
 
-func (s *Server) writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, err error) {
 	var code string
 	var status int
 	var message string
@@ -34,11 +36,21 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		code = "permission_denied"
 		status = http.StatusForbidden
 		message = "Path permission denied"
+	case errors.Is(err, transcode.ErrQueueFull):
+		code = "transcode_queue_full"
+		status = http.StatusUnavailableForLegalReasons
+		message = "too many transcode jobs"
+	case errors.Is(err, transcode.ErrProfileNotFound):
+		code = "bad_request"
+		status = http.StatusBadRequest
+		message = "profile not found"
 	default:
 		code = "internal_server_error"
 		status = http.StatusInternalServerError
 		message = "Internal Server Error"
 	}
+
+	slog.Error("error", "code", code, "message", message)
 
 	writeJson(w, status, map[string]string{"error": code, "message": message})
 }

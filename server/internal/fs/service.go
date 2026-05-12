@@ -138,6 +138,12 @@ func (s *Service) File(root string, path string) (*os.File, *FileInfo, error) {
 	return file, info, nil
 }
 
+func (s *Service) ResolvedPath(root string, path string) (*ResolvedPath, error) {
+	resolved, err := s.resolve(root, path)
+
+	return resolved, err
+}
+
 func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) {
 	resolved, err := s.resolve(root, path)
 	if err != nil {
@@ -147,7 +153,7 @@ func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) 
 		return nil, ErrNotAFile
 	}
 	if typeForFile(resolved.AbsPath) != TypeVideo {
-		return nil, nil
+		return nil, ErrNotVideo
 	}
 
 	return resolved, nil

@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mediaService := media.NewService(cfg.FFmpeg.FFprobePath)
+	mediaService := media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback)
 
 	transcodeManager := transcode.NewManager(cfg)
 

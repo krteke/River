@@ -2,8 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/krteke/River/internal/config"
 	filesystem "github.com/krteke/River/internal/fs"
@@ -16,6 +21,15 @@ type Server struct {
 	fileService      *filesystem.Service
 	mediaService     *media.Service
 	transcodeManager *transcode.Manager
+}
+
+type playResponse struct {
+	Mode         string  `json:"mode"`
+	URL          string  `json:"url"`
+	Mime         string  `json:"mime,omitempty"`
+	SessionID    string  `json:"session_id,omitempty"`
+	Profile      string  `json:"profile,omitempty"`
+	StartSeconds float64 `json:"start_seconds,omitempty"`
 }
 
 func NewServer(cfg config.Config, fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager) *Server {
@@ -81,7 +95,7 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 	list, err := s.fileService.List(root, path)
 	if err != nil {
 		slog.Error("failed to list", "root", root, "path", path, "error", err)
-		s.writeError(w, err)
+		writeError(w, err)
 
 		return
 	}
@@ -95,7 +109,7 @@ func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
 	file, info, err := s.fileService.File(root, path)
 	if err != nil {
 		slog.Error("failed to get file", "root", root, "path", path, "error", err)
-		s.writeError(w, err)
+		writeError(w, err)
 		return
 	}
 	defer file.Close()
@@ -105,18 +119,9 @@ func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
-	root, path := parseQuery(r)
-	resolved, err := s.fileService.ResolveVideo(root, path)
+	info, err := s.mediaInfo(r)
 	if err != nil {
-		slog.Error("failed to resolve video", "root", root, "path", path, "error", err)
-		s.writeError(w, err)
-		return
-	}
-
-	info, err := s.mediaService.Probe(r.Context(), resolved.AbsPath)
-	if err != nil {
-		slog.Error("failed to probe video", "root", root, "path", path, "error", err)
-		s.writeError(w, err)
+		writeError(w, err)
 		return
 	}
 
@@ -124,7 +129,53 @@ func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
+	root, path := parseQuery(r)
+	resolved, err := s.fileService.ResolvedPath(root, path)
 
+	info, err := s.mediaInfo(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	startSeconds, err := parseStartSeconds(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	startSeconds = clampStartSeconds(startSeconds, info.Container.Duration)
+
+	playback := s.mediaService.PlaybackInfo(info)
+
+	if playback.Mode == media.PlaybackModeDirect {
+		writeJson(w, http.StatusOK, playResponse{
+			Mode:         "direct",
+			URL:          fileURL(root, resolved.RelPath),
+			Mime:         filesystem.ContentType(resolved.AbsPath),
+			StartSeconds: startSeconds,
+		})
+		return
+	}
+
+	session, err := s.transcodeManager.Start(r.Context(), transcode.StartOptions{
+		RootID:           root,
+		RelPath:          resolved.RelPath,
+		SourcePath:       resolved.AbsPath,
+		ProfileName:      r.URL.Query().Get("profile"),
+		StartSeconds:     startSeconds,
+		ReplaceSessionID: strings.TrimSpace(r.URL.Query().Get("replace_session_id")),
+	})
+	if err != nil {
+		writeError(w, err)
+	}
+
+	writeJson(w, http.StatusOK, playResponse{
+		Mode:         "hls",
+		SessionID:    session.ID,
+		URL:          "/stream/" + session.ID + "/master.m3u8",
+		Profile:      session.ProfileName,
+		StartSeconds: session.StartSeconds,
+	})
 }
 
 func (s *Server) withLog(next http.Handler) http.Handler {
@@ -135,12 +186,69 @@ func (s *Server) withLog(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) mediaInfo(r *http.Request) (*media.MediaInfo, error) {
+	root, path := parseQuery(r)
+	resolved, err := s.fileService.ResolveVideo(root, path)
+	if err != nil {
+		slog.Error("failed to resolve video", "root", root, "path", path, "error", err)
+		return nil, err
+	}
+
+	info, err := s.mediaService.Probe(r.Context(), resolved.AbsPath)
+	if err != nil {
+		slog.Error("failed to probe video", "root", root, "path", path, "error", err)
+		return nil, err
+	}
+
+	return info, nil
+}
+
+func fileURL(root string, relPath string) string {
+	values := url.Values{}
+	values.Set("root", root)
+	values.Set("path", relPath)
+	return "/api/file?" + values.Encode()
+}
+
+func clampStartSeconds(start, duration float64) float64 {
+	if duration <= 0 {
+		return start
+	}
+	if start < duration {
+		return start
+	}
+	if duration <= 0.001 {
+		return 0
+	}
+
+	return duration - 0.001
+}
+
 func parseQuery(r *http.Request) (string, string) {
 	root := r.URL.Query().Get("root")
 	path := r.URL.Query().Get("path")
 	slog.Info("received list request", "root", root, "path", path)
 
 	return root, path
+}
+
+func parseStartSeconds(r *http.Request) (float64, error) {
+	start := r.URL.Query().Get("start_seconds")
+	if start == "" {
+		return 0, nil
+	}
+	seconds, err := strconv.ParseFloat(start, 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return 0, errors.New("start_seconds must be a finite number")
+	}
+	if seconds < 0 {
+		return 0, errors.New("start_seconds must be non-negative")
+	}
+
+	return seconds, nil
 }
 
 func writeJson(w http.ResponseWriter, status int, v any) {

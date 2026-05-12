@@ -11,16 +11,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/krteke/River/internal/config"
 )
 
 const defaultProbeTimeout = 30 * time.Second
 
 type Service struct {
 	ffprobePath string
+	playback    config.PlaybackConfig
 }
 
-func NewService(ffprobePath string) *Service {
-	return &Service{ffprobePath: ffprobePath}
+func NewService(ffprobePath string, playback config.PlaybackConfig) *Service {
+	return &Service{ffprobePath: ffprobePath, playback: playback}
 }
 
 func (s *Service) Probe(ctx context.Context, filePath string) (*MediaInfo, error) {
@@ -76,6 +79,22 @@ func (s *Service) probeRaw(ctx context.Context, filePath string) (ffprobeOutput,
 	return raw, nil
 }
 
+func (s *Service) PlaybackInfo(info *MediaInfo) PlaybackInfo {
+	container := info.Container.Name
+	if (container == "mp4" || container == "mov") && videoDirectPlay(info) && audioDirectPlay(info) && (info.Container.BitRate < s.playback.DirectPlayMaxBitrate) {
+		return PlaybackInfo{Mode: PlaybackModeDirect, Direct: &DirectPlayInfo{Mime: mimeForDirectPlay(container)}}
+	}
+
+	return PlaybackInfo{
+		Mode: PlaybackModeTranscode,
+		TransCode: &TranscodeInfo{
+			TargetContainer: "hls",
+			VideoCodec:      "h264",
+			AudioCodec:      "aac",
+		},
+	}
+}
+
 func normalize(raw ffprobeOutput) MediaInfo {
 	media := MediaInfo{
 		Container: ContainerInfo{
@@ -90,7 +109,7 @@ func normalize(raw ffprobeOutput) MediaInfo {
 	for _, stream := range raw.Streams {
 		base := trackBaseFromFFProbe(stream)
 
-		switch strings.ToLower(stream.CodecName) {
+		switch strings.ToLower(stream.CodecType) {
 		case "video":
 			track := VideoTrack{
 				TrackBase:      base,
@@ -181,4 +200,36 @@ func parseRational(value string) *Rational {
 	r.Den = parseInt64(strings.TrimSpace(parts[1]))
 
 	return r
+}
+
+func videoDirectPlay(info *MediaInfo) bool {
+	for _, video := range info.Tracks.Video {
+		if strings.ToLower(video.Codec) != "h264" {
+			return false
+		}
+	}
+
+	return true
+}
+
+func audioDirectPlay(info *MediaInfo) bool {
+	for _, audio := range info.Tracks.Audio {
+		switch strings.ToLower(audio.Codec) {
+		case "aac", "mp3":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func mimeForDirectPlay(container string) string {
+	switch container {
+	case "mp4":
+		return "video/mp4"
+	case "mov":
+		return "video/quicktime"
+	default:
+		return "application/octet-stream"
+	}
 }
