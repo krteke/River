@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=River
+Comment=Self-hosted media streaming client
+Exec=river_client
+Icon=river_client
+Type=Application
+Categories=Network;AudioVideo;Video;
+Terminal=false
