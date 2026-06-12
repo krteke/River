@@ -145,7 +145,20 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev \
+            libmpv-dev
+            mpv
+      - name: Verify mpv pkg-config
+        run: |
+          pkg-config --modversion mpv
+          pkg-config --cflags mpv
+          pkg-config --libs mpv
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -301,6 +314,22 @@ jobs:
           done
           printf '%s' "${ANDROID_KEYSTORE_BASE64}" |
             base64 --decode > client/android/app/release.jks
+
+          validation_dir="$(mktemp -d)"
+          validation_jar="${validation_dir}/validation.jar"
+          trap 'rm -rf "${validation_dir}"' EXIT
+          mkdir "${validation_dir}/empty"
+          jar --create --file "${validation_jar}" -C "${validation_dir}/empty" .
+          if ! jarsigner \
+            -keystore client/android/app/release.jks \
+            -storepass "${ANDROID_KEYSTORE_PASSWORD}" \
+            -keypass "${ANDROID_KEY_PASSWORD}" \
+            "${validation_jar}" \
+            "${ANDROID_KEY_ALIAS}"; then
+            echo "Android signing secrets do not match the supplied keystore." >&2
+            echo "Check the keystore Base64, store password, alias, and key password." >&2
+            exit 1
+          fi
 
       - name: Build and package
         working-directory: client
