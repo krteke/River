@@ -1,0 +1,365 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: "3.44.2"
+  GO_VERSION: "1.25.9"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${GITHUB_REF_NAME}" >&2
+            echo "Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease." >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      - name: Test server
+        working-directory: server
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Verify client
+        working-directory: client
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  server:
+    name: Server ${{ matrix.goos }} ${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+          - goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: server/go.sum
+
+      - name: Build and package
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package="river-server-${version}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/${package}/configs"
+
+          output="dist/${package}/river-server"
+          if [[ "${GOOS}" == "windows" ]]; then
+            output="${output}.exe"
+          fi
+
+          (
+            cd server
+            go build -trimpath -ldflags="-s -w" -o "../${output}" ./cmd/server
+          )
+          cp server/configs/config.example.toml "dist/${package}/configs/"
+          cp README.md LICENSE "dist/${package}/"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            (cd dist && zip -r "${package}.zip" "${package}")
+          else
+            tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          fi
+
+      - name: Upload server package
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.${{ matrix.archive }}
+          if-no-files-found: error
+
+  client-linux:
+    name: Client Linux
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build and package
+        working-directory: client
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          build_name="${version%%-*}"
+          flutter pub get
+          flutter build linux --release \
+            --build-name="${build_name}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+          package="river-client-${version}-linux-x64"
+          mkdir -p "../dist/${package}"
+          cp -a build/linux/x64/release/bundle/. "../dist/${package}/"
+          tar -C ../dist -czf "../dist/${package}.tar.gz" "${package}"
+
+      - name: Upload Linux client
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-linux-x64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  client-windows:
+    name: Client Windows
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $buildName = $version.Split("-")[0]
+          Push-Location client
+          flutter pub get
+          flutter build windows --release --build-name="$buildName" --build-number="$env:GITHUB_RUN_NUMBER"
+          Pop-Location
+
+          $package = "river-client-$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path "dist/$package" | Out-Null
+          Copy-Item -Recurse -Force "client/build/windows/x64/runner/Release/*" "dist/$package/"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+
+      - name: Upload Windows client
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  client-apple:
+    name: Client macOS and iOS
+    needs: verify
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build macOS and unsigned iOS apps
+        working-directory: client
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          build_name="${version%%-*}"
+          flutter pub get
+          flutter build macos --release \
+            --build-name="${build_name}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+          flutter build ios --release --no-codesign \
+            --build-name="${build_name}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+
+          mkdir -p ../dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/Build/Products/Release/river_client.app \
+            "../dist/river-client-${version}-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/ios/iphoneos/Runner.app \
+            "../dist/river-client-${version}-ios-unsigned.zip"
+
+      - name: Upload Apple clients
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-apple
+          path: dist/*.zip
+          if-no-files-found: error
+
+  client-android:
+    name: Client Android
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Configure Android signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for value in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!value}" ]]; then
+              echo "Missing required repository secret: ${value}" >&2
+              exit 1
+            fi
+          done
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" |
+            base64 --decode > client/android/app/release.jks
+
+      - name: Build and package
+        working-directory: client
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          build_name="${version%%-*}"
+          flutter pub get
+          flutter build apk --release \
+            --split-per-abi \
+            --build-name="${build_name}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+          mkdir -p ../dist
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            source="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            if [[ ! -f "${source}" ]]; then
+              echo "Missing Android APK for ABI ${abi}: ${source}" >&2
+              exit 1
+            fi
+            cp "${source}" "../dist/river-client-${version}-android-${abi}.apk"
+          done
+
+      - name: Upload Android client
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - server
+      - client-linux
+      - client-windows
+      - client-apple
+      - client-android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
