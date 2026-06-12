@@ -34,6 +34,9 @@ func main() {
 		slog.Error("failed to init filesystem service", "error", err)
 		os.Exit(1)
 	}
+	for _, root := range fileService.Roots() {
+		slog.Info("root config", "id", root.ID, "name", root.Name, "path", root.RealPath)
+	}
 
 	mediaService := media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback)
 
@@ -43,7 +46,7 @@ func main() {
 	defer stop()
 	transcodeManager.StartCleanupLoop(ctx)
 
-	apiServer := api.NewServer(*cfg, fileService, mediaService, transcodeManager)
+	apiServer := api.NewServer(fileService, mediaService, transcodeManager)
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           apiServer.Handler(),
@@ -60,6 +63,8 @@ func main() {
 	logger.Info("server start", "listen", cfg.Server.Listen)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
+		transcodeManager.StopAll()
 		os.Exit(1)
 	}
+	transcodeManager.StopAll()
 }

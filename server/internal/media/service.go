@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,8 @@ import (
 )
 
 const defaultProbeTimeout = 30 * time.Second
+
+var ErrFFprobeNotAvailable = errors.New("ffprobe not available")
 
 type Service struct {
 	ffprobePath string
@@ -57,6 +60,10 @@ func (s *Service) probeRaw(ctx context.Context, filePath string) (ffprobeOutput,
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return ffprobeOutput{}, fmt.Errorf("ffprobe timeout after %s for %q: %w", defaultProbeTimeout, filepath.Base(filePath), ctx.Err())
 		}
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, os.ErrNotExist) {
+			return ffprobeOutput{}, fmt.Errorf("%w: %v", ErrFFprobeNotAvailable, err)
+		}
 
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
@@ -80,9 +87,18 @@ func (s *Service) probeRaw(ctx context.Context, filePath string) (ffprobeOutput,
 }
 
 func (s *Service) PlaybackInfo(info *MediaInfo) PlaybackInfo {
-	container := info.Container.Name
-	if (container == "mp4" || container == "mov") && videoDirectPlay(info) && audioDirectPlay(info) && (info.Container.BitRate < s.playback.DirectPlayMaxBitrate) {
-		return PlaybackInfo{Mode: PlaybackModeDirect, Direct: &DirectPlayInfo{Mime: mimeForDirectPlay(container)}}
+	if len(info.Tracks.Video) == 0 {
+		return PlaybackInfo{
+			Mode:        PlaybackModeUnsupported,
+			Unsupported: &UnsupportedInfo{Message: "media has no video track"},
+		}
+	}
+	if directPlayContainer(info.Container.Name) &&
+		videoDirectPlay(info, s.playback.DirectPlayMaxWidth, s.playback.DirectPlayMaxHeight) &&
+		audioDirectPlay(info) &&
+		info.Container.BitRate > 0 &&
+		info.Container.BitRate <= s.playback.DirectPlayMaxBitrate {
+		return PlaybackInfo{Mode: PlaybackModeDirect, Direct: &DirectPlayInfo{Mime: "video/mp4"}}
 	}
 
 	return PlaybackInfo{
@@ -202,9 +218,22 @@ func parseRational(value string) *Rational {
 	return r
 }
 
-func videoDirectPlay(info *MediaInfo) bool {
+func directPlayContainer(container string) bool {
+	for _, name := range strings.Split(strings.ToLower(container), ",") {
+		switch strings.TrimSpace(name) {
+		case "mp4", "mov":
+			return true
+		}
+	}
+	return false
+}
+
+func videoDirectPlay(info *MediaInfo, maxWidth, maxHeight int) bool {
+	if len(info.Tracks.Video) == 0 {
+		return false
+	}
 	for _, video := range info.Tracks.Video {
-		if strings.ToLower(video.Codec) != "h264" {
+		if strings.ToLower(video.Codec) != "h264" || video.Width <= 0 || video.Height <= 0 || video.Width > maxWidth || video.Height > maxHeight {
 			return false
 		}
 	}
@@ -221,15 +250,4 @@ func audioDirectPlay(info *MediaInfo) bool {
 		}
 	}
 	return true
-}
-
-func mimeForDirectPlay(container string) string {
-	switch container {
-	case "mp4":
-		return "video/mp4"
-	case "mov":
-		return "video/quicktime"
-	default:
-		return "application/octet-stream"
-	}
 }

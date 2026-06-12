@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"os"
-	"path"
+	pathpkg "path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gabriel-vasile/mimetype"
@@ -22,10 +24,11 @@ const (
 )
 
 var (
-	ErrRootNotFound = errors.New("root not found")
-	ErrNotDirectory = errors.New("path is not a directory")
-	ErrNotAFile     = errors.New("path is not a file")
-	ErrNotVideo     = errors.New("file is not a video")
+	ErrRootNotFound  = errors.New("root not found")
+	ErrNotDirectory  = errors.New("path is not a directory")
+	ErrNotAFile      = errors.New("path is not a file")
+	ErrNotVideo      = errors.New("file is not a video")
+	ErrPathForbidden = errors.New("path is outside root")
 )
 
 type Service struct {
@@ -54,16 +57,29 @@ func NewService(rootConfigs []config.RootConfig) (*Service, error) {
 		roots[config.ID] = Root{
 			ID:       config.ID,
 			Name:     name,
-			Path:     abs,
 			RealPath: filepath.Clean(realPath),
+		}
+		info, err := os.Stat(realPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to stat root %s: %w", config.ID, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("root %s is not a directory", config.ID)
 		}
 	}
 
 	return &Service{roots: roots}, nil
 }
 
-func (s *Service) Roots() map[string]Root {
-	return s.roots
+func (s *Service) Roots() []Root {
+	roots := make([]Root, 0, len(s.roots))
+	for _, root := range s.roots {
+		roots = append(roots, root)
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		return roots[i].ID < roots[j].ID
+	})
+	return roots
 }
 
 func (s *Service) List(root string, path string) (*ListResponse, error) {
@@ -82,17 +98,18 @@ func (s *Service) List(root string, path string) (*ListResponse, error) {
 	items := make([]ListItem, 0, len(entries))
 
 	for _, entry := range entries {
-		info, err := entry.Info()
+		itemPath := pathpkg.Join(resolved.RelPath, entry.Name())
+		itemResolved, err := s.resolve(root, itemPath)
 		if err != nil {
 			continue
 		}
-		itemPath := JoinReal(resolved.AbsPath, entry.Name())
+		info := itemResolved.Info
 
 		var itemType string
-		if entry.IsDir() {
+		if info.IsDir() {
 			itemType = TypeDirectory
 		} else {
-			itemType = typeForFile(resolved.AbsPath)
+			itemType = TypeForFile(entry.Name())
 		}
 
 		items = append(items, ListItem{
@@ -132,16 +149,12 @@ func (s *Service) File(root string, path string) (*os.File, *FileInfo, error) {
 	info := &FileInfo{
 		Mime:    ContentType(resolved.AbsPath),
 		Name:    resolved.Info.Name(),
+		Type:    TypeForFile(resolved.AbsPath),
+		Size:    resolved.Info.Size(),
 		ModTime: resolved.Info.ModTime(),
 	}
 
 	return file, info, nil
-}
-
-func (s *Service) ResolvedPath(root string, path string) (*ResolvedPath, error) {
-	resolved, err := s.resolve(root, path)
-
-	return resolved, err
 }
 
 func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) {
@@ -152,7 +165,7 @@ func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) 
 	if resolved.Info.IsDir() {
 		return nil, ErrNotAFile
 	}
-	if typeForFile(resolved.AbsPath) != TypeVideo {
+	if TypeForFile(resolved.AbsPath) != TypeVideo {
 		return nil, ErrNotVideo
 	}
 
@@ -164,9 +177,21 @@ func (s *Service) resolve(root string, path string) (*ResolvedPath, error) {
 	if !ok {
 		return nil, ErrRootNotFound
 	}
+	if hasParentTraversal(path) {
+		return nil, ErrPathForbidden
+	}
 
 	relativePath := CleanPath(path)
-	absPath := filepath.Join(r.RealPath, strings.TrimPrefix(relativePath, "/"))
+	joinedPath := filepath.Join(r.RealPath, strings.TrimPrefix(relativePath, "/"))
+	absPath, err := filepath.EvalSymlinks(joinedPath)
+	if err != nil {
+		return nil, err
+	}
+	absPath = filepath.Clean(absPath)
+	if !isWithinRoot(r.RealPath, absPath) {
+		return nil, ErrPathForbidden
+	}
+
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return nil, err
@@ -183,6 +208,9 @@ func (s *Service) resolve(root string, path string) (*ResolvedPath, error) {
 }
 
 func ContentType(path string) string {
+	if contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); contentType != "" {
+		return contentType
+	}
 	mtype, err := mimetype.DetectFile(path)
 	if err == nil && mtype != nil {
 		return mtype.String()
@@ -197,28 +225,39 @@ func CleanPath(p string) string {
 	if p == "" {
 		return "/"
 	}
-	cleaned := path.Clean("/" + strings.TrimSpace(p))
+	cleaned := pathpkg.Clean("/" + p)
 
 	return cleaned
 }
 
-func JoinReal(base string, name string) string {
-	return filepath.Join(base, name)
-}
-
-func typeForFile(path string) string {
-	mtype := ContentType(path)
-
-	switch strings.Split(mtype, "/")[0] {
-	case "image":
+func TypeForFile(filePath string) string {
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif":
 		return TypeImage
-	case "text":
+	case ".txt", ".md", ".nfo", ".json", ".yaml", ".yml", ".xml", ".srt", ".ass", ".log":
 		return TypeText
-	case "video":
+	case ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m2ts", ".ts", ".flv", ".wmv":
 		return TypeVideo
 	default:
 		return TypeOther
 	}
+}
+
+func isWithinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func hasParentTraversal(requestPath string) bool {
+	for _, part := range strings.Split(strings.ReplaceAll(requestPath, "\\", "/"), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func fileSize(info os.FileInfo) int64 {
@@ -238,12 +277,3 @@ func parentPath(path string) string {
 
 	return cleanedPath
 }
-
-// func (s *Service) ListRoots() []Root {
-// 	roots := make([]Root, 0, len(s.roots))
-// 	for _, root := range s.roots {
-// 		roots = append(roots, root)
-// 	}
-
-// 	return roots
-// }

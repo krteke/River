@@ -20,10 +20,14 @@ import (
 )
 
 var (
-	ErrQueueFull       = errors.New("transcode queue full")
-	ErrSessionNotFound = errors.New("stream session not found")
-	ErrProfileNotFound = errors.New("profile not found")
+	ErrQueueFull          = errors.New("transcode queue full")
+	ErrSessionNotFound    = errors.New("stream session not found")
+	ErrProfileNotFound    = errors.New("profile not found")
+	ErrInvalidStreamFile  = errors.New("invalid stream file")
+	ErrFFmpegNotAvailable = errors.New("ffmpeg not available")
 )
+
+const transcodeReadyTimeout = 15 * time.Second
 
 type StartOptions struct {
 	RootID           string
@@ -45,10 +49,11 @@ type StreamSession struct {
 	LastAccessAt time.Time `json:"last_access_at"`
 	Status       string    `json:"status"`
 
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
-	stderr *tailBuffer
-	done   chan struct{}
+	sourcePath string
+	cmd        *exec.Cmd
+	cancel     context.CancelFunc
+	stderr     *tailBuffer
+	done       chan struct{}
 }
 
 type tailBuffer struct {
@@ -90,11 +95,6 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 		return nil, ErrProfileNotFound
 	}
 
-	m.mu.Lock()
-	if m.runningLocked() >= m.cfg.FFmpeg.MaxConcurrentJobs {
-		m.mu.Unlock()
-		return nil, ErrQueueFull
-	}
 	sessionID := newSessionID()
 	tempDir := filepath.Join(m.cfg.Transcode.TempDir, sessionID)
 	now := time.Now()
@@ -108,18 +108,16 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 		StartedAt:    now,
 		LastAccessAt: now,
 		Status:       "starting",
+		sourcePath:   options.SourcePath,
 		stderr:       newTailBuffer(64 * 1024),
 		done:         make(chan struct{}),
 	}
-	m.sessions[sessionID] = session
-	m.mu.Unlock()
 
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		m.removeSession(sessionID)
 		return nil, err
 	}
 	if err := writeMasterPlaylist(filepath.Join(tempDir, "master.m3u8"), profile); err != nil {
-		m.removeSession(sessionID)
+		_ = os.RemoveAll(tempDir)
 		return nil, err
 	}
 
@@ -130,20 +128,60 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 	cmd := exec.CommandContext(processCtx, m.cfg.FFmpeg.FFmpegPath, args...)
 	cmd.Stderr = session.stderr
 	session.cmd = cmd
-	if err := cmd.Start(); err != nil {
-		cancel()
-		m.removeSession(sessionID)
-		_ = os.RemoveAll(tempDir)
-		return nil, err
-	}
 
 	m.mu.Lock()
+	if m.runningLocked() >= m.cfg.FFmpeg.MaxConcurrentJobs {
+		m.mu.Unlock()
+		cancel()
+		_ = os.RemoveAll(tempDir)
+		return nil, ErrQueueFull
+	}
+	m.sessions[sessionID] = session
+	if err := cmd.Start(); err != nil {
+		delete(m.sessions, sessionID)
+		m.mu.Unlock()
+		cancel()
+		_ = os.RemoveAll(tempDir)
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", ErrFFmpegNotAvailable, err)
+		}
+		return nil, err
+	}
 	session.Status = "running"
 	m.mu.Unlock()
 
 	go m.wait(session)
+	if err := m.waitReady(ctx, session); err != nil {
+		m.Stop(session.ID)
+		return nil, err
+	}
 	slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds)
 	return session, nil
+}
+
+func (m *Manager) OpenStreamFile(sessionID, name string) (*os.File, error) {
+	if !validStreamFile(name) {
+		return nil, ErrInvalidStreamFile
+	}
+
+	m.mu.Lock()
+	session, ok := m.sessions[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+
+	file, err := os.Open(filepath.Join(session.TempDir, name))
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if current, ok := m.sessions[sessionID]; ok && current == session {
+		current.LastAccessAt = time.Now()
+	}
+	m.mu.Unlock()
+	return file, nil
 }
 
 func (m *Manager) StartCleanupLoop(ctx context.Context) {
@@ -172,6 +210,7 @@ func (m *Manager) StopAll() {
 	m.sessions = make(map[string]*StreamSession)
 	m.mu.Unlock()
 	for _, session := range sessions {
+		slog.Info("stop transcode", "session_id", session.ID)
 		m.stopSession(session)
 	}
 }
@@ -192,6 +231,10 @@ func (m *Manager) stopSession(session *StreamSession) {
 	case <-time.After(5 * time.Second):
 		if session.cmd != nil && session.cmd.Process != nil {
 			_ = session.cmd.Process.Kill()
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
 		}
 	}
 	_ = os.RemoveAll(session.TempDir)
@@ -214,7 +257,7 @@ func (m *Manager) cleanupIdle() {
 	}
 }
 
-func (m *Manager) Stop(id string) {
+func (m *Manager) Stop(id string) bool {
 	m.mu.Lock()
 	session, ok := m.sessions[id]
 	if ok {
@@ -222,8 +265,10 @@ func (m *Manager) Stop(id string) {
 	}
 	m.mu.Unlock()
 	if ok {
+		slog.Info("stop transcode", "session_id", session.ID)
 		m.stopSession(session)
 	}
+	return ok
 }
 
 func (m *Manager) runningLocked() int {
@@ -237,7 +282,7 @@ func (m *Manager) runningLocked() int {
 }
 
 func newSessionID() string {
-	var b [4]byte
+	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return fmt.Sprintf("s_%d", time.Now().UnixNano())
 	}
@@ -248,19 +293,9 @@ func newTailBuffer(limit int) *tailBuffer {
 	return &tailBuffer{limit: limit}
 }
 
-func (m *Manager) removeSession(id string) {
-	m.mu.Lock()
-	delete(m.sessions, id)
-	m.mu.Unlock()
-}
-
 func writeMasterPlaylist(path string, profile config.ProfileConfig) error {
-	width := profile.Width
-	if width <= 0 {
-		width = 1920
-	}
 	bandwidth := estimateBandwidth(profile.VideoBitrate, profile.AudioBitrate)
-	content := fmt.Sprintf("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx1080\nindex.m3u8\n", bandwidth, width)
+	content := fmt.Sprintf("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=%d\nindex.m3u8\n", bandwidth)
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
@@ -308,12 +343,14 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 		"-bufsize", bitrateBufSize(videoBitrate),
 		"-profile:v", "high",
 		"-pix_fmt", "yuv420p",
+		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", segmentDuration),
 		"-c:a", valueOrDefault(profile.AudioCodec, "aac"),
 		"-b:a", audioBitrate,
 		"-ac", fmt.Sprintf("%d", audioChannels),
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%d", segmentDuration),
 		"-hls_list_size", "0",
+		"-hls_flags", "independent_segments",
 		"-hls_segment_filename", filepath.Join(tempDir, "seg_%06d.ts"),
 		filepath.Join(tempDir, "index.m3u8"),
 	)
@@ -343,12 +380,65 @@ func (m *Manager) wait(session *StreamSession) {
 	if current, ok := m.sessions[session.ID]; ok {
 		if err != nil {
 			current.Status = "failed"
-			slog.Error("transcode failed", "session_id", session.ID, "error", err, "stderr", session.stderr.String())
+			exitCode := -1
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitCode()
+			}
+			slog.Error("transcode failed",
+				"session_id", session.ID,
+				"source", session.sourcePath,
+				"profile", session.ProfileName,
+				"exit_code", exitCode,
+				"error", err,
+				"stderr", session.stderr.String(),
+			)
 		} else {
 			current.Status = "exited"
 		}
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) waitReady(ctx context.Context, session *StreamSession) error {
+	timer := time.NewTimer(transcodeReadyTimeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	playlistPath := filepath.Join(session.TempDir, "index.m3u8")
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-session.done:
+			if info, err := os.Stat(playlistPath); err == nil && info.Size() > 0 {
+				return nil
+			}
+			return fmt.Errorf("ffmpeg exited before HLS was ready: %s", strings.TrimSpace(session.stderr.String()))
+		case <-timer.C:
+			return errors.New("timed out waiting for HLS playlist")
+		case <-ticker.C:
+			if info, err := os.Stat(playlistPath); err == nil && info.Size() > 0 {
+				return nil
+			}
+		}
+	}
+}
+
+func validStreamFile(name string) bool {
+	if name == "master.m3u8" || name == "index.m3u8" {
+		return true
+	}
+	if !strings.HasPrefix(name, "seg_") || !strings.HasSuffix(name, ".ts") || len(name) != len("seg_000000.ts") {
+		return false
+	}
+	for _, digit := range name[len("seg_") : len(name)-len(".ts")] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func estimateBandwidth(videoBitrate, audioBitrate string) int {

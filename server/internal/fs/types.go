@@ -8,7 +8,6 @@ import (
 type Root struct {
 	ID       string
 	Name     string
-	Path     string
 	RealPath string
 }
 
@@ -37,5 +36,7 @@ type ListItem struct {
 type FileInfo struct {
 	Mime    string
 	Name    string
+	Type    string
+	Size    int64
 	ModTime time.Time
 }

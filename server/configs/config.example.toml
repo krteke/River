@@ -5,7 +5,6 @@ listen = "127.0.0.1:8080"
 id = "data"
 name = "Data"
 path = "/mnt"
-# symlink_policy = "deny" # "deny" / "allow_external" / "within_root"
 
 [ffmpeg]
 ffmpeg_path = "/usr/bin/ffmpeg"
