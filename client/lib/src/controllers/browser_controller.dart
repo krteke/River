@@ -5,6 +5,16 @@ import '../models/server_profile.dart';
 import '../services/river_api.dart';
 import '../services/server_store.dart';
 
+enum FileSortField {
+  name,
+  size;
+
+  String get label => switch (this) {
+    FileSortField.name => '文件名',
+    FileSortField.size => '文件大小',
+  };
+}
+
 class BrowserController extends ChangeNotifier {
   BrowserController({ServerStoreBase? store}) : _store = store ?? ServerStore();
 
@@ -21,14 +31,20 @@ class BrowserController extends ChangeNotifier {
   String? errorMessage;
   bool loading = true;
   bool loadingPreview = false;
+  FileSortField sortField = FileSortField.name;
+  bool sortAscending = true;
 
   bool get canOpenParentDirectory => listing != null && listing!.path != '/';
 
-  List<FileEntry> get imageEntries =>
-      listing?.items
-          .where((entry) => entry.type == RiverFileType.image)
-          .toList() ??
-      const [];
+  List<FileEntry> get sortedEntries {
+    final items = [...?listing?.items];
+    items.sort(_compareEntries);
+    return items;
+  }
+
+  List<FileEntry> get imageEntries => sortedEntries
+      .where((entry) => entry.type == RiverFileType.image)
+      .toList();
 
   int get selectedImageIndex {
     final entry = selectedEntry;
@@ -44,6 +60,8 @@ class BrowserController extends ChangeNotifier {
     final index = selectedImageIndex;
     return index >= 0 && index < imageEntries.length - 1;
   }
+
+  String get sortLabel => '${sortField.label} ${sortAscending ? '升序' : '降序'}';
 
   Future<void> initialize() async {
     loading = true;
@@ -144,6 +162,12 @@ class BrowserController extends ChangeNotifier {
     await openDirectory('/');
   }
 
+  void setSort(FileSortField field, bool ascending) {
+    sortField = field;
+    sortAscending = ascending;
+    notifyListeners();
+  }
+
   Future<void> openDirectory(String path) async {
     final currentApi = api;
     final root = selectedRoot;
@@ -240,5 +264,38 @@ class BrowserController extends ChangeNotifier {
 
   String _message(Object error) {
     return error is RiverApiException ? error.message : '操作失败，请稍后重试';
+  }
+
+  int _compareEntries(FileEntry left, FileEntry right) {
+    if (left.type == RiverFileType.directory &&
+        right.type != RiverFileType.directory) {
+      return -1;
+    }
+    if (right.type == RiverFileType.directory &&
+        left.type != RiverFileType.directory) {
+      return 1;
+    }
+
+    final result = switch (sortField) {
+      FileSortField.name => _compareNames(left, right),
+      FileSortField.size => _compareSizes(left, right),
+    };
+    return sortAscending ? result : -result;
+  }
+
+  int _compareNames(FileEntry left, FileEntry right) {
+    final result = left.name.toLowerCase().compareTo(right.name.toLowerCase());
+    if (result != 0) {
+      return result;
+    }
+    return left.path.compareTo(right.path);
+  }
+
+  int _compareSizes(FileEntry left, FileEntry right) {
+    final result = left.size.compareTo(right.size);
+    if (result != 0) {
+      return result;
+    }
+    return _compareNames(left, right);
   }
 }

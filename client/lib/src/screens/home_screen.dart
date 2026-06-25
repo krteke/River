@@ -242,6 +242,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _filePane() {
     final listing = _controller.listing;
+    final entries = _controller.sortedEntries;
     return Column(
       children: [
         _pathBar(listing),
@@ -251,15 +252,15 @@ class _HomeScreenState extends State<HomeScreen> {
         Expanded(
           child: Stack(
             children: [
-              if (listing == null || listing.items.isEmpty)
+              if (listing == null || entries.isEmpty)
                 const Center(child: Text('此目录为空'))
               else
                 ListView.separated(
-                  itemCount: listing.items.length,
+                  itemCount: entries.length,
                   separatorBuilder: (_, _) =>
                       const Divider(height: 1, indent: 64),
                   itemBuilder: (context, index) {
-                    final entry = listing.items[index];
+                    final entry = entries[index];
                     return _FileTile(
                       entry: entry,
                       selected: _controller.selectedEntry?.path == entry.path,
@@ -314,7 +315,55 @@ class _HomeScreenState extends State<HomeScreen> {
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ),
-          const SizedBox(width: 12),
+          PopupMenuButton<_SortChoice>(
+            tooltip: '排序：${_controller.sortLabel}',
+            initialValue: _SortChoice(
+              _controller.sortField,
+              _controller.sortAscending,
+            ),
+            onSelected: (choice) =>
+                _controller.setSort(choice.field, choice.ascending),
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: _SortChoice(FileSortField.name, true),
+                child: ListTile(
+                  leading: Icon(Icons.sort_by_alpha),
+                  title: Text('文件名升序'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: _SortChoice(FileSortField.name, false),
+                child: ListTile(
+                  leading: Icon(Icons.sort_by_alpha),
+                  title: Text('文件名降序'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: _SortChoice(FileSortField.size, true),
+                child: ListTile(
+                  leading: Icon(Icons.data_usage_outlined),
+                  title: Text('文件大小升序'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: _SortChoice(FileSortField.size, false),
+                child: ListTile(
+                  leading: Icon(Icons.data_usage_outlined),
+                  title: Text('文件大小降序'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+            icon: Icon(
+              _controller.sortAscending
+                  ? Icons.arrow_upward
+                  : Icons.arrow_downward,
+            ),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
     );
@@ -418,6 +467,22 @@ class _HomeScreenState extends State<HomeScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
+}
+
+class _SortChoice {
+  const _SortChoice(this.field, this.ascending);
+
+  final FileSortField field;
+  final bool ascending;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _SortChoice &&
+      other.field == field &&
+      other.ascending == ascending;
+
+  @override
+  int get hashCode => Object.hash(field, ascending);
 }
 
 class _ThemeModeMenu extends StatelessWidget {

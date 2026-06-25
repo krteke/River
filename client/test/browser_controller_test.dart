@@ -70,6 +70,65 @@ void main() {
 
     expect(controller.canOpenParentDirectory, isFalse);
   });
+
+  test('sorts entries by name and size in both directions', () {
+    final controller = BrowserController(store: _MemoryServerStore());
+    controller.listing = DirectoryListing.fromJson({
+      'root_id': 'media',
+      'path': '/',
+      'parent': '',
+      'items': [
+        {
+          'name': 'b.mp4',
+          'path': '/b.mp4',
+          'type': 'video',
+          'size': 200,
+          'mtime': 1,
+        },
+        {
+          'name': 'Folder',
+          'path': '/Folder',
+          'type': 'directory',
+          'size': 0,
+          'mtime': 1,
+        },
+        {
+          'name': 'a.mp4',
+          'path': '/a.mp4',
+          'type': 'video',
+          'size': 300,
+          'mtime': 1,
+        },
+      ],
+    });
+
+    expect(controller.sortedEntries.map((entry) => entry.name), [
+      'Folder',
+      'a.mp4',
+      'b.mp4',
+    ]);
+
+    controller.setSort(FileSortField.name, false);
+    expect(controller.sortedEntries.map((entry) => entry.name), [
+      'Folder',
+      'b.mp4',
+      'a.mp4',
+    ]);
+
+    controller.setSort(FileSortField.size, true);
+    expect(controller.sortedEntries.map((entry) => entry.name), [
+      'Folder',
+      'b.mp4',
+      'a.mp4',
+    ]);
+
+    controller.setSort(FileSortField.size, false);
+    expect(controller.sortedEntries.map((entry) => entry.name), [
+      'Folder',
+      'a.mp4',
+      'b.mp4',
+    ]);
+  });
 }
 
 class _MemoryServerStore implements ServerStoreBase {
