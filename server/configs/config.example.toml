@@ -18,6 +18,15 @@ temp_dir = "/tmp/lightfm-transcode"
 idle_timeout_seconds = 90
 segment_duration_seconds = 6
 
+[thumbnail]
+cache_dir = "/tmp/river-thumbnails"
+width = 320
+height = 180
+video_seek_seconds = 10
+max_age_seconds = 604800
+max_size_mb = 512
+cleanup_interval_seconds = 3600
+
 [playback]
 direct_play_max_bitrate = 12000000
 direct_play_max_width = 1920

@@ -31,6 +31,7 @@ class FileEntry {
     required this.type,
     required this.size,
     required this.modifiedAt,
+    this.thumbnailUrl,
   });
 
   final String name;
@@ -38,6 +39,7 @@ class FileEntry {
   final RiverFileType type;
   final int size;
   final DateTime modifiedAt;
+  final String? thumbnailUrl;
 
   factory FileEntry.fromJson(Map<String, dynamic> json) {
     return FileEntry(
@@ -48,6 +50,7 @@ class FileEntry {
       modifiedAt: DateTime.fromMillisecondsSinceEpoch(
         (json['mtime'] as num).toInt() * 1000,
       ),
+      thumbnailUrl: json['thumbnail_url'] as String?,
     );
   }
 }

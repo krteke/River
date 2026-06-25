@@ -14,6 +14,7 @@ import (
 	"github.com/krteke/River/internal/config"
 	filesystem "github.com/krteke/River/internal/fs"
 	"github.com/krteke/River/internal/media"
+	"github.com/krteke/River/internal/thumbnail"
 	"github.com/krteke/River/internal/transcode"
 )
 
@@ -39,6 +40,10 @@ func main() {
 	}
 
 	mediaService := media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback)
+	thumbnailService := thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail)
+	if err := thumbnailService.Cleanup(); err != nil {
+		logger.Warn("thumbnail cache cleanup failed", "error", err)
+	}
 
 	transcodeManager := transcode.NewManager(cfg)
 
@@ -46,7 +51,7 @@ func main() {
 	defer stop()
 	transcodeManager.StartCleanupLoop(ctx)
 
-	apiServer := api.NewServer(fileService, mediaService, transcodeManager, cfg.Server.Password)
+	apiServer := api.NewServer(fileService, mediaService, thumbnailService, transcodeManager, cfg.Server.Password)
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           apiServer.Handler(),

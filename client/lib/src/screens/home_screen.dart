@@ -264,6 +264,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     return _FileTile(
                       entry: entry,
                       selected: _controller.selectedEntry?.path == entry.path,
+                      api: _controller.api!,
                       onTap: () => _openEntry(entry),
                       onDownload: entry.type == RiverFileType.directory
                           ? null
@@ -539,12 +540,14 @@ class _FileTile extends StatelessWidget {
   const _FileTile({
     required this.entry,
     required this.selected,
+    required this.api,
     required this.onTap,
     this.onDownload,
   });
 
   final FileEntry entry;
   final bool selected;
+  final RiverApi api;
   final VoidCallback onTap;
   final VoidCallback? onDownload;
 
@@ -552,11 +555,7 @@ class _FileTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListTile(
       selected: selected,
-      leading: CircleAvatar(
-        backgroundColor: _color(context).withValues(alpha: 0.12),
-        foregroundColor: _color(context),
-        child: Icon(_icon),
-      ),
+      leading: _leading(context),
       title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: entry.type == RiverFileType.directory
           ? const Text('文件夹')
@@ -572,6 +571,34 @@ class _FileTile extends StatelessWidget {
             ),
       onTap: onTap,
       onLongPress: onDownload,
+    );
+  }
+
+  Widget _leading(BuildContext context) {
+    final thumbnailUrl = entry.thumbnailUrl;
+    if (thumbnailUrl == null || thumbnailUrl.isEmpty) {
+      return _iconAvatar(context);
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Image.network(
+          api.absoluteUrl(thumbnailUrl),
+          headers: api.authHeaders,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => _iconAvatar(context),
+        ),
+      ),
+    );
+  }
+
+  Widget _iconAvatar(BuildContext context) {
+    return CircleAvatar(
+      backgroundColor: _color(context).withValues(alpha: 0.12),
+      foregroundColor: _color(context),
+      child: Icon(_icon),
     );
   }
 

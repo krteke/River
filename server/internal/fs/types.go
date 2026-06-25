@@ -26,11 +26,12 @@ type ListResponse struct {
 }
 
 type ListItem struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Type  string `json:"type"`
-	Size  int64  `json:"size"`
-	MTime int64  `json:"mtime"`
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	Type         string `json:"type"`
+	Size         int64  `json:"size"`
+	MTime        int64  `json:"mtime"`
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 }
 
 type FileInfo struct {

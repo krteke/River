@@ -27,6 +27,7 @@ void main() {
           'type': 'video',
           'size': 10,
           'mtime': 1,
+          'thumbnail_url': '/api/thumbnail?root=media&path=%2Fmovie.mp4',
         },
         {
           'name': 'Folder',
@@ -40,6 +41,10 @@ void main() {
 
     expect(listing.items.first.type, RiverFileType.directory);
     expect(listing.items.last.type, RiverFileType.video);
+    expect(
+      listing.items.last.thumbnailUrl,
+      '/api/thumbnail?root=media&path=%2Fmovie.mp4',
+    );
   });
 
   test('parses HLS play response', () {

@@ -12,6 +12,7 @@ import (
 	"github.com/krteke/River/internal/config"
 	filesystem "github.com/krteke/River/internal/fs"
 	"github.com/krteke/River/internal/media"
+	"github.com/krteke/River/internal/thumbnail"
 	"github.com/krteke/River/internal/transcode"
 )
 
@@ -133,7 +134,7 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg), "").Handler()
+	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingProbeHandler, "/api/video/info?root=media&path=/movie.mp4")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
 
@@ -144,7 +145,7 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg), "").Handler()
+	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingFFmpegHandler, "/api/video/play?root=media&path=/movie.mkv")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
 }
@@ -159,7 +160,7 @@ func TestPasswordAuthentication(t *testing.T) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), manager, "secret").Handler()
+	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "secret").Handler()
 
 	response := request(t, handler, "/api/health")
 	assertAPIError(t, response, http.StatusUnauthorized, "unauthorized")
@@ -173,6 +174,49 @@ func TestPasswordAuthentication(t *testing.T) {
 	}
 }
 
+func TestListIncludesThumbnailURLsAndServesCachedThumbnail(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "cover.jpg"), []byte("image"))
+	mustWrite(t, filepath.Join(root, "movie.mp4"), []byte("video"))
+	mustWrite(t, filepath.Join(root, "notes.txt"), []byte("text"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/list?root=media&path=/")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected list status: %d body=%s", response.Code, response.Body.String())
+	}
+	var list filesystem.ListResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	items := make(map[string]filesystem.ListItem, len(list.Items))
+	for _, item := range list.Items {
+		items[item.Name] = item
+	}
+	if !strings.HasPrefix(items["cover.jpg"].ThumbnailURL, "/api/thumbnail?") {
+		t.Fatalf("image missing thumbnail url: %+v", items["cover.jpg"])
+	}
+	if !strings.HasPrefix(items["movie.mp4"].ThumbnailURL, "/api/thumbnail?") {
+		t.Fatalf("video missing thumbnail url: %+v", items["movie.mp4"])
+	}
+	if items["notes.txt"].ThumbnailURL != "" {
+		t.Fatalf("text should not have thumbnail url: %+v", items["notes.txt"])
+	}
+
+	response = request(t, handler, items["movie.mp4"].ThumbnailURL)
+	if response.Code != http.StatusOK || response.Body.String() != "thumbnail" {
+		t.Fatalf("unexpected thumbnail response: status=%d body=%q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("unexpected thumbnail content type: %q", got)
+	}
+
+	response = request(t, handler, items["movie.mp4"].ThumbnailURL)
+	if response.Code != http.StatusOK || response.Body.String() != "thumbnail" {
+		t.Fatalf("unexpected cached thumbnail response: status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func testHandler(t *testing.T, root string) (http.Handler, *transcode.Manager) {
 	t.Helper()
 	cfg := testConfig(t, root)
@@ -182,7 +226,7 @@ func testHandler(t *testing.T, root string) (http.Handler, *transcode.Manager) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), manager, "").Handler(), manager
+	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler(), manager
 }
 
 func testConfig(t *testing.T, root string) *config.Config {
@@ -193,6 +237,7 @@ func testConfig(t *testing.T, root string) *config.Config {
 	cfg.FFmpeg.FFmpegPath = fakeFFmpeg(t)
 	cfg.FFmpeg.MaxConcurrentJobs = 2
 	cfg.Transcode.TempDir = t.TempDir()
+	cfg.Thumbnail.CacheDir = t.TempDir()
 	return &cfg
 }
 
@@ -215,6 +260,13 @@ func fakeFFmpeg(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "ffmpeg")
 	script := `#!/bin/sh
+case "$*" in
+*"-frames:v 1"*)
+  for last do :; done
+  printf 'thumbnail' > "$last"
+  exit 0
+  ;;
+esac
 for last do :; done
 dir=${last%/*}
 printf 'segment' > "$dir/seg_000000.ts"

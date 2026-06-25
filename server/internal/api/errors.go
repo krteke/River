@@ -8,6 +8,7 @@ import (
 
 	filesystem "github.com/krteke/River/internal/fs"
 	"github.com/krteke/River/internal/media"
+	"github.com/krteke/River/internal/thumbnail"
 	"github.com/krteke/River/internal/transcode"
 )
 
@@ -48,6 +49,10 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "unsupported_file_type"
 		status = http.StatusUnsupportedMediaType
 		message = "file is not a supported video"
+	case errors.Is(err, filesystem.ErrNoThumbnail):
+		code = "unsupported_file_type"
+		status = http.StatusUnsupportedMediaType
+		message = "file does not support thumbnails"
 	case errors.Is(err, errTextFileTooLarge):
 		code = "text_file_too_large"
 		status = http.StatusRequestEntityTooLarge
@@ -60,7 +65,7 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "transcode_queue_full"
 		status = http.StatusServiceUnavailable
 		message = "too many transcode jobs"
-	case errors.Is(err, transcode.ErrFFmpegNotAvailable), errors.Is(err, media.ErrFFprobeNotAvailable):
+	case errors.Is(err, transcode.ErrFFmpegNotAvailable), errors.Is(err, media.ErrFFprobeNotAvailable), errors.Is(err, thumbnail.ErrFFmpegNotAvailable):
 		code = "ffmpeg_not_available"
 		status = http.StatusServiceUnavailable
 		message = "ffmpeg tools are not available"

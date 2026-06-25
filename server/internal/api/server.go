@@ -10,12 +10,14 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
 	filesystem "github.com/krteke/River/internal/fs"
 	"github.com/krteke/River/internal/media"
 	streaming "github.com/krteke/River/internal/stream"
+	"github.com/krteke/River/internal/thumbnail"
 	"github.com/krteke/River/internal/transcode"
 )
 
@@ -25,6 +27,7 @@ const authPasswordHeader = "X-River-Password"
 type Server struct {
 	fileService      *filesystem.Service
 	mediaService     *media.Service
+	thumbnailService *thumbnail.Service
 	transcodeManager *transcode.Manager
 	streamService    *streaming.Service
 	password         string
@@ -40,10 +43,11 @@ type playResponse struct {
 	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 }
 
-func NewServer(fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager, password string) *Server {
+func NewServer(fileService *filesystem.Service, mediaService *media.Service, thumbnailService *thumbnail.Service, transcodeManager *transcode.Manager, password string) *Server {
 	return &Server{
 		fileService:      fileService,
 		mediaService:     mediaService,
+		thumbnailService: thumbnailService,
 		transcodeManager: transcodeManager,
 		streamService:    streaming.NewService(transcodeManager),
 		password:         password,
@@ -56,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/roots", s.rootsHandler)
 	mux.HandleFunc("GET /api/list", s.listHandler)
 	mux.HandleFunc("GET /api/file", s.fileHandler)
+	mux.HandleFunc("GET /api/thumbnail", s.thumbnailHandler)
 	mux.HandleFunc("GET /api/download", s.downloadHandler)
 	mux.HandleFunc("GET /api/video/info", s.videoInfoHandler)
 	mux.HandleFunc("GET /api/video/play", s.videoPlayHandler)
@@ -115,6 +120,12 @@ func (s *Server) listHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("list directory", "root", root, "path", path, "items", len(list.Items))
+	for i := range list.Items {
+		switch list.Items[i].Type {
+		case filesystem.TypeImage, filesystem.TypeVideo:
+			list.Items[i].ThumbnailURL = thumbnailURL(root, list.Items[i].Path)
+		}
+	}
 	writeJson(w, http.StatusOK, list)
 }
 
@@ -145,6 +156,36 @@ func (s *Server) fileHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": info.Name}))
 	slog.Info("read file", "root", root, "path", path, "type", info.Type)
 	http.ServeContent(w, r, info.Name, info.ModTime, file)
+}
+
+func (s *Server) thumbnailHandler(w http.ResponseWriter, r *http.Request) {
+	root, path, err := parseQuery(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	resolved, err := s.fileService.ResolveThumbnailSource(root, path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	result, err := s.thumbnailService.Get(r.Context(), resolved)
+	if err != nil {
+		slog.Error("failed to generate thumbnail", "root", root, "path", path, "error", err)
+		writeError(w, err)
+		return
+	}
+	file, err := os.Open(result.Path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", result.ContentType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	slog.Info("read thumbnail", "root", root, "path", path)
+	http.ServeContent(w, r, "thumbnail.jpg", result.ModTime, file)
 }
 
 func (s *Server) downloadHandler(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +340,13 @@ func fileURL(root string, relPath string) string {
 	values.Set("root", root)
 	values.Set("path", relPath)
 	return "/api/file?" + values.Encode()
+}
+
+func thumbnailURL(root string, relPath string) string {
+	values := url.Values{}
+	values.Set("root", root)
+	values.Set("path", relPath)
+	return "/api/thumbnail?" + values.Encode()
 }
 
 func clampStartSeconds(start, duration float64) float64 {

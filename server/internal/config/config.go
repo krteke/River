@@ -14,6 +14,7 @@ type Config struct {
 	Roots     []RootConfig    `toml:"roots"`
 	FFmpeg    FFmpegConfig    `toml:"ffmpeg"`
 	Transcode TranscodeConfig `toml:"transcode"`
+	Thumbnail ThumbnailConfig `toml:"thumbnail"`
 	Playback  PlaybackConfig  `toml:"playback"`
 	Profiles  []ProfileConfig `toml:"profiles"`
 }
@@ -39,6 +40,16 @@ type TranscodeConfig struct {
 	TempDir                string `toml:"temp_dir"`
 	IdleTimeoutSeconds     int    `toml:"idle_timeout_seconds"`
 	SegmentDurationSeconds int    `toml:"segment_duration_seconds"`
+}
+
+type ThumbnailConfig struct {
+	CacheDir               string `toml:"cache_dir"`
+	Width                  int    `toml:"width"`
+	Height                 int    `toml:"height"`
+	VideoSeekSeconds       int    `toml:"video_seek_seconds"`
+	MaxAgeSeconds          int    `toml:"max_age_seconds"`
+	MaxSizeMB              int64  `toml:"max_size_mb"`
+	CleanupIntervalSeconds int    `toml:"cleanup_interval_seconds"`
 }
 
 type PlaybackConfig struct {
@@ -79,6 +90,15 @@ func Default() Config {
 			TempDir:                filepath.Join(os.TempDir(), "/temp-transcode"),
 			IdleTimeoutSeconds:     60,
 			SegmentDurationSeconds: 6,
+		},
+		Thumbnail: ThumbnailConfig{
+			CacheDir:               filepath.Join(os.TempDir(), "river-thumbnails"),
+			Width:                  320,
+			Height:                 180,
+			VideoSeekSeconds:       10,
+			MaxAgeSeconds:          7 * 24 * 60 * 60,
+			MaxSizeMB:              512,
+			CleanupIntervalSeconds: 60 * 60,
 		},
 		Playback: PlaybackConfig{
 			DirectPlayMaxBitrate: 8_000_000,
@@ -143,6 +163,27 @@ func (c Config) Validate() error {
 	}
 	if c.Transcode.SegmentDurationSeconds <= 0 {
 		return errors.New("transcode.segment_duration_seconds must be greater than 0")
+	}
+	if c.Thumbnail.CacheDir == "" {
+		return errors.New("thumbnail.cache_dir is required")
+	}
+	if c.Thumbnail.Width <= 0 {
+		return errors.New("thumbnail.width must be greater than 0")
+	}
+	if c.Thumbnail.Height <= 0 {
+		return errors.New("thumbnail.height must be greater than 0")
+	}
+	if c.Thumbnail.VideoSeekSeconds < 0 {
+		return errors.New("thumbnail.video_seek_seconds must be non-negative")
+	}
+	if c.Thumbnail.MaxAgeSeconds <= 0 {
+		return errors.New("thumbnail.max_age_seconds must be greater than 0")
+	}
+	if c.Thumbnail.MaxSizeMB <= 0 {
+		return errors.New("thumbnail.max_size_mb must be greater than 0")
+	}
+	if c.Thumbnail.CleanupIntervalSeconds <= 0 {
+		return errors.New("thumbnail.cleanup_interval_seconds must be greater than 0")
 	}
 	if c.Playback.DirectPlayMaxBitrate <= 0 {
 		return errors.New("playback.direct_play_max_bitrate must be greater than 0")

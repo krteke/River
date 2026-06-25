@@ -28,6 +28,7 @@ var (
 	ErrNotDirectory  = errors.New("path is not a directory")
 	ErrNotAFile      = errors.New("path is not a file")
 	ErrNotVideo      = errors.New("file is not a video")
+	ErrNoThumbnail   = errors.New("file does not support thumbnails")
 	ErrPathForbidden = errors.New("path is outside root")
 )
 
@@ -167,6 +168,22 @@ func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) 
 	}
 	if TypeForFile(resolved.AbsPath) != TypeVideo {
 		return nil, ErrNotVideo
+	}
+
+	return resolved, nil
+}
+
+func (s *Service) ResolveThumbnailSource(root string, path string) (*ResolvedPath, error) {
+	resolved, err := s.resolve(root, path)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.Info.IsDir() {
+		return nil, ErrNotAFile
+	}
+	fileType := TypeForFile(resolved.AbsPath)
+	if fileType != TypeImage && fileType != TypeVideo {
+		return nil, ErrNoThumbnail
 	}
 
 	return resolved, nil
