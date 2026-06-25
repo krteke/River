@@ -50,6 +50,22 @@ class FilePreview extends StatelessWidget {
                 onPressed: () => onDownload(entry),
                 icon: const Icon(Icons.download_outlined),
               ),
+              if (entry.type == RiverFileType.image) ...[
+                IconButton(
+                  tooltip: '上一张',
+                  onPressed: controller.canSelectPreviousImage
+                      ? () => controller.selectPreviousImage()
+                      : null,
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                IconButton(
+                  tooltip: '下一张',
+                  onPressed: controller.canSelectNextImage
+                      ? () => controller.selectNextImage()
+                      : null,
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
             ],
           ),
         ),
@@ -61,24 +77,52 @@ class FilePreview extends StatelessWidget {
 
   Widget _content(BuildContext context, FileEntry entry) {
     return switch (entry.type) {
-      RiverFileType.image => InteractiveViewer(
-        minScale: 0.5,
-        maxScale: 5,
-        child: Center(
-          child: Image.network(
-            controller.api!.fileUrl(controller.selectedRoot!.id, entry.path),
-            fit: BoxFit.contain,
-            errorBuilder: (_, _, _) => const _PreviewMessage(
-              icon: Icons.broken_image_outlined,
-              message: '图片加载失败',
+      RiverFileType.image => Stack(
+        fit: StackFit.expand,
+        children: [
+          InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 5,
+            child: Center(
+              child: Image.network(
+                controller.api!.fileUrl(
+                  controller.selectedRoot!.id,
+                  entry.path,
+                ),
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const _PreviewMessage(
+                  icon: Icons.broken_image_outlined,
+                  message: '图片加载失败',
+                ),
+                loadingBuilder: (_, child, progress) {
+                  return progress == null
+                      ? child
+                      : const Center(child: CircularProgressIndicator());
+                },
+              ),
             ),
-            loadingBuilder: (_, child, progress) {
-              return progress == null
-                  ? child
-                  : const Center(child: CircularProgressIndicator());
-            },
           ),
-        ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _ImageNavigationButton(
+              tooltip: '上一张',
+              icon: Icons.chevron_left,
+              onPressed: controller.canSelectPreviousImage
+                  ? () => controller.selectPreviousImage()
+                  : null,
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _ImageNavigationButton(
+              tooltip: '下一张',
+              icon: Icons.chevron_right,
+              onPressed: controller.canSelectNextImage
+                  ? () => controller.selectNextImage()
+                  : null,
+            ),
+          ),
+        ],
       ),
       RiverFileType.text =>
         controller.loadingPreview
@@ -120,9 +164,38 @@ class MobilePreviewScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(controller.selectedEntry?.name ?? '预览')),
-      body: FilePreview(controller: controller, onDownload: onDownload),
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return Scaffold(
+          appBar: AppBar(title: Text(controller.selectedEntry?.name ?? '预览')),
+          body: FilePreview(controller: controller, onDownload: onDownload),
+        );
+      },
+    );
+  }
+}
+
+class _ImageNavigationButton extends StatelessWidget {
+  const _ImageNavigationButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: IconButton.filledTonal(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        icon: Icon(icon),
+      ),
     );
   }
 }

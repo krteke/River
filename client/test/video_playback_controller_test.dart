@@ -39,6 +39,58 @@ void main() {
     expect(controller.duration, const Duration(seconds: 60));
   });
 
+  test('seeks direct videos relative to the displayed position', () async {
+    final api = _FakePlaybackApi(
+      responses: [
+        const PlayResponse(
+          mode: 'direct',
+          url: '/api/file?root=media&path=/movie.mp4',
+          durationSeconds: 60,
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.mp4',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    engine.emitPosition(const Duration(seconds: 20));
+    await Future<void>.delayed(Duration.zero);
+    await controller.seekRelative(const Duration(seconds: 10));
+    controller.dispose();
+
+    expect(engine.seekedPosition, const Duration(seconds: 30));
+  });
+
+  test('updates playback rate through the playback engine', () async {
+    final api = _FakePlaybackApi(
+      responses: [
+        const PlayResponse(
+          mode: 'direct',
+          url: '/api/file?root=media&path=/movie.mp4',
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.mp4',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    await controller.setPlaybackRate(1.5);
+    controller.dispose();
+
+    expect(controller.playbackRate, 1.5);
+    expect(engine.rate, 1.5);
+  });
+
   test('does not add a client start offset for HLS sessions', () async {
     final api = _FakePlaybackApi(
       responses: [
@@ -166,6 +218,7 @@ class _FakePlaybackEngine implements PlaybackEngine {
   Media? openedMedia;
   Duration? seekedPosition;
   bool _playing = true;
+  double rate = 1;
 
   @override
   VideoController get videoController => throw UnsupportedError(
@@ -209,6 +262,12 @@ class _FakePlaybackEngine implements PlaybackEngine {
   Future<void> seek(Duration position) async {
     calls.add('seek');
     seekedPosition = position;
+  }
+
+  @override
+  Future<void> setRate(double rate) async {
+    calls.add('setRate');
+    this.rate = rate;
   }
 
   void emitPosition(Duration position) {

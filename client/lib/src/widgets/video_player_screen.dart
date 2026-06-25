@@ -23,7 +23,13 @@ class VideoPlayerScreen extends StatefulWidget {
 }
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
+  static const double _gesturePixelsPerSecond = 8;
+  static const int _gestureMaxSeconds = 120;
+
   late final VideoPlaybackController _controller;
+  Duration? _gestureBasePosition;
+  Duration _gestureOffset = Duration.zero;
+  double _gestureDelta = 0;
 
   @override
   void initState() {
@@ -39,6 +45,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handleSeekDragStart(DragStartDetails details) {
+    if (_controller.duration <= Duration.zero || _controller.seeking) {
+      return;
+    }
+    setState(() {
+      _gestureBasePosition = _controller.position;
+      _gestureOffset = Duration.zero;
+      _gestureDelta = 0;
+    });
+  }
+
+  void _handleSeekDragUpdate(DragUpdateDetails details) {
+    if (_gestureBasePosition == null) {
+      return;
+    }
+    _gestureDelta += details.delta.dx;
+    final seconds = (_gestureDelta / _gesturePixelsPerSecond).round().clamp(
+      -_gestureMaxSeconds,
+      _gestureMaxSeconds,
+    );
+    setState(() => _gestureOffset = Duration(seconds: seconds));
+  }
+
+  void _handleSeekDragEnd(DragEndDetails details) {
+    final base = _gestureBasePosition;
+    final offset = _gestureOffset;
+    setState(() {
+      _gestureBasePosition = null;
+      _gestureOffset = Duration.zero;
+      _gestureDelta = 0;
+    });
+    if (base != null && offset != Duration.zero) {
+      _controller.seekTo(base + offset);
+    }
   }
 
   @override
@@ -88,7 +130,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               ),
             );
           }
-          final useTimelineControls = _controller.usesServerTimeline;
           return Stack(
             fit: StackFit.expand,
             children: [
@@ -96,11 +137,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 child: Video(
                   controller: _controller.videoController,
                   fit: BoxFit.contain,
-                  controls: useTimelineControls ? null : AdaptiveVideoControls,
+                  controls: null,
                 ),
               ),
-              if (useTimelineControls)
-                _SourceTimelineControls(controller: _controller),
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: _handleSeekDragStart,
+                  onHorizontalDragUpdate: _handleSeekDragUpdate,
+                  onHorizontalDragEnd: _handleSeekDragEnd,
+                  onHorizontalDragCancel: () {
+                    setState(() {
+                      _gestureBasePosition = null;
+                      _gestureOffset = Duration.zero;
+                      _gestureDelta = 0;
+                    });
+                  },
+                ),
+              ),
+              _UnifiedVideoControls(controller: _controller),
+              if (_gestureBasePosition != null)
+                _SeekGestureOverlay(
+                  offset: _gestureOffset,
+                  target: _clampDuration(
+                    _gestureBasePosition! + _gestureOffset,
+                    _controller.duration,
+                  ),
+                ),
             ],
           );
         },
@@ -109,17 +172,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 }
 
-class _SourceTimelineControls extends StatefulWidget {
-  const _SourceTimelineControls({required this.controller});
+class _UnifiedVideoControls extends StatefulWidget {
+  const _UnifiedVideoControls({required this.controller});
 
   final VideoPlaybackController controller;
 
   @override
-  State<_SourceTimelineControls> createState() =>
-      _SourceTimelineControlsState();
+  State<_UnifiedVideoControls> createState() => _UnifiedVideoControlsState();
 }
 
-class _SourceTimelineControlsState extends State<_SourceTimelineControls> {
+class _UnifiedVideoControlsState extends State<_UnifiedVideoControls> {
   double? _dragValue;
 
   @override
@@ -160,14 +222,41 @@ class _SourceTimelineControlsState extends State<_SourceTimelineControls> {
                   children: [
                     IconButton(
                       color: Colors.white,
+                      tooltip: '后退 10 秒',
+                      onPressed: controller.seeking
+                          ? null
+                          : () => controller.seekRelative(
+                              const Duration(seconds: -10),
+                            ),
+                      icon: const Icon(Icons.replay_10_rounded),
+                    ),
+                    IconButton.filled(
                       tooltip: controller.playing ? '暂停' : '播放',
-                      onPressed: controller.togglePlay,
+                      onPressed: controller.seeking
+                          ? null
+                          : controller.togglePlay,
                       icon: Icon(
                         controller.playing
                             ? Icons.pause_rounded
                             : Icons.play_arrow_rounded,
                       ),
                     ),
+                    IconButton(
+                      color: Colors.white,
+                      tooltip: '快进 10 秒',
+                      onPressed: controller.seeking
+                          ? null
+                          : () => controller.seekRelative(
+                              const Duration(seconds: 10),
+                            ),
+                      icon: const Icon(Icons.forward_10_rounded),
+                    ),
+                    const Spacer(),
+                    _SpeedMenu(controller: controller),
+                  ],
+                ),
+                Row(
+                  children: [
                     Text(
                       _formatDuration(
                         Duration(milliseconds: sliderValue.round()),
@@ -209,6 +298,82 @@ class _SourceTimelineControlsState extends State<_SourceTimelineControls> {
   }
 }
 
+class _SpeedMenu extends StatelessWidget {
+  const _SpeedMenu({required this.controller});
+
+  static const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+  final VideoPlaybackController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<double>(
+      tooltip: '播放速度',
+      enabled: !controller.seeking,
+      initialValue: controller.playbackRate,
+      onSelected: controller.setPlaybackRate,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.speed_rounded, color: Colors.white),
+            const SizedBox(width: 6),
+            Text(
+              _formatSpeed(controller.playbackRate),
+              style: const TextStyle(color: Colors.white),
+            ),
+          ],
+        ),
+      ),
+      itemBuilder: (context) => [
+        for (final speed in speeds)
+          PopupMenuItem(value: speed, child: Text(_formatSpeed(speed))),
+      ],
+    );
+  }
+}
+
+class _SeekGestureOverlay extends StatelessWidget {
+  const _SeekGestureOverlay({required this.offset, required this.target});
+
+  final Duration offset;
+  final Duration target;
+
+  @override
+  Widget build(BuildContext context) {
+    final seconds = offset.inSeconds;
+    final icon = seconds >= 0 ? Icons.forward_rounded : Icons.replay_rounded;
+    final label = seconds >= 0 ? '+${seconds}s' : '${seconds}s';
+    return Center(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.72),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white, size: 32),
+              const SizedBox(width: 10),
+              Text(
+                '$label  ${_formatDuration(target)}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 String _formatDuration(Duration duration) {
   final totalSeconds = duration.inSeconds;
   final hours = totalSeconds ~/ 3600;
@@ -219,4 +384,21 @@ String _formatDuration(Duration duration) {
     return '$hours:${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
   return '$minutes:${twoDigits(seconds)}';
+}
+
+String _formatSpeed(double speed) {
+  if (speed == speed.roundToDouble()) {
+    return '${speed.toStringAsFixed(0)}x';
+  }
+  return '${speed.toStringAsFixed(2).replaceFirst(RegExp(r'0$'), '')}x';
+}
+
+Duration _clampDuration(Duration value, Duration duration) {
+  if (value < Duration.zero) {
+    return Duration.zero;
+  }
+  if (duration > Duration.zero && value > duration) {
+    return duration;
+  }
+  return value;
 }

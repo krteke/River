@@ -47,44 +47,56 @@ class _HomeScreenState extends State<HomeScreen> {
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) {
-        return Scaffold(
-          appBar: AppBar(
-            titleSpacing: 20,
-            title: Row(
-              children: [
-                const Icon(Icons.water_rounded),
-                const SizedBox(width: 10),
-                const Text('River'),
-                if (_controller.selectedServer != null) ...[
-                  const SizedBox(width: 16),
-                  Flexible(
-                    child: Text(
-                      _controller.selectedServer!.name,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium,
+        final handleDirectoryBack =
+            MediaQuery.sizeOf(context).width < 900 &&
+            _controller.canOpenParentDirectory;
+        return PopScope<void>(
+          canPop: !handleDirectoryBack,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop || !handleDirectoryBack) {
+              return;
+            }
+            _run(_controller.openParentDirectory);
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              titleSpacing: 20,
+              title: Row(
+                children: [
+                  const Icon(Icons.water_rounded),
+                  const SizedBox(width: 10),
+                  const Text('River'),
+                  if (_controller.selectedServer != null) ...[
+                    const SizedBox(width: 16),
+                    Flexible(
+                      child: Text(
+                        _controller.selectedServer!.name,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
                     ),
-                  ),
+                  ],
                 ],
+              ),
+              actions: [
+                if (widget.themeController != null)
+                  _ThemeModeMenu(controller: widget.themeController!),
+                if (_controller.api != null)
+                  IconButton(
+                    tooltip: '刷新',
+                    onPressed: _controller.loading ? null : _refresh,
+                    icon: const Icon(Icons.refresh),
+                  ),
+                IconButton(
+                  tooltip: '服务器管理',
+                  onPressed: _showServerManager,
+                  icon: const Icon(Icons.dns_outlined),
+                ),
+                const SizedBox(width: 8),
               ],
             ),
-            actions: [
-              if (widget.themeController != null)
-                _ThemeModeMenu(controller: widget.themeController!),
-              if (_controller.api != null)
-                IconButton(
-                  tooltip: '刷新',
-                  onPressed: _controller.loading ? null : _refresh,
-                  icon: const Icon(Icons.refresh),
-                ),
-              IconButton(
-                tooltip: '服务器管理',
-                onPressed: _showServerManager,
-                icon: const Icon(Icons.dns_outlined),
-              ),
-              const SizedBox(width: 8),
-            ],
+            body: _body(context),
           ),
-          body: _body(context),
         );
       },
     );
@@ -283,7 +295,7 @@ class _HomeScreenState extends State<HomeScreen> {
             tooltip: '上一级',
             onPressed: listing == null || listing.path == '/'
                 ? null
-                : () => _run(() => _controller.openDirectory(listing.parent)),
+                : () => _run(_controller.openParentDirectory),
             icon: const Icon(Icons.arrow_upward),
           ),
           IconButton(

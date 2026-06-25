@@ -50,6 +50,7 @@ class VideoPlaybackController extends ChangeNotifier {
   bool loading = true;
   bool seeking = false;
   bool playing = false;
+  double playbackRate = 1;
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
   bool _disposed = false;
@@ -83,6 +84,19 @@ class VideoPlaybackController extends ChangeNotifier {
 
   Future<void> togglePlay() {
     return _playbackEngine.playOrPause();
+  }
+
+  Future<void> setPlaybackRate(double rate) async {
+    if (rate <= 0) {
+      return;
+    }
+    playbackRate = rate;
+    notifyListeners();
+    await _playbackEngine.setRate(rate);
+  }
+
+  Future<void> seekRelative(Duration offset) {
+    return seekTo(position + offset);
   }
 
   Future<void> seekTo(Duration target) async {
@@ -155,6 +169,9 @@ class VideoPlaybackController extends ChangeNotifier {
 
     await _playbackEngine.forceSeekable();
     await _playbackEngine.open(_mediaFor(response));
+    if (playbackRate != 1) {
+      await _playbackEngine.setRate(playbackRate);
+    }
   }
 
   Media _mediaFor(PlayResponse response) {
@@ -210,6 +227,8 @@ abstract interface class PlaybackEngine {
 
   Future<void> seek(Duration position);
 
+  Future<void> setRate(double rate);
+
   Future<void> dispose();
 }
 
@@ -259,6 +278,11 @@ class MediaKitPlaybackEngine implements PlaybackEngine {
   @override
   Future<void> seek(Duration position) {
     return _player.seek(position);
+  }
+
+  @override
+  Future<void> setRate(double rate) {
+    return _player.setRate(rate);
   }
 
   @override

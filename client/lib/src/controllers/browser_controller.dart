@@ -22,6 +22,29 @@ class BrowserController extends ChangeNotifier {
   bool loading = true;
   bool loadingPreview = false;
 
+  bool get canOpenParentDirectory => listing != null && listing!.path != '/';
+
+  List<FileEntry> get imageEntries =>
+      listing?.items
+          .where((entry) => entry.type == RiverFileType.image)
+          .toList() ??
+      const [];
+
+  int get selectedImageIndex {
+    final entry = selectedEntry;
+    if (entry == null || entry.type != RiverFileType.image) {
+      return -1;
+    }
+    return imageEntries.indexWhere((image) => image.path == entry.path);
+  }
+
+  bool get canSelectPreviousImage => selectedImageIndex > 0;
+
+  bool get canSelectNextImage {
+    final index = selectedImageIndex;
+    return index >= 0 && index < imageEntries.length - 1;
+  }
+
   Future<void> initialize() async {
     loading = true;
     notifyListeners();
@@ -143,6 +166,15 @@ class BrowserController extends ChangeNotifier {
     }
   }
 
+  Future<bool> openParentDirectory() async {
+    final current = listing;
+    if (current == null || current.path == '/') {
+      return false;
+    }
+    await openDirectory(current.parent);
+    return true;
+  }
+
   Future<void> refresh() async {
     await openDirectory(listing?.path ?? '/');
   }
@@ -170,6 +202,23 @@ class BrowserController extends ChangeNotifier {
       loadingPreview = false;
       notifyListeners();
     }
+  }
+
+  Future<void> selectPreviousImage() async {
+    final index = selectedImageIndex;
+    if (index <= 0) {
+      return;
+    }
+    await selectFile(imageEntries[index - 1]);
+  }
+
+  Future<void> selectNextImage() async {
+    final index = selectedImageIndex;
+    final images = imageEntries;
+    if (index < 0 || index >= images.length - 1) {
+      return;
+    }
+    await selectFile(images[index + 1]);
   }
 
   void clearError() {
