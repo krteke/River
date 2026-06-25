@@ -12,7 +12,20 @@ class RiverApiException implements Exception {
   String toString() => message;
 }
 
-class RiverApi {
+abstract interface class VideoPlaybackApi {
+  String absoluteUrl(String path);
+
+  Future<PlayResponse> playVideo(
+    String root,
+    String path, {
+    double startSeconds = 0,
+    String? replaceSessionId,
+  });
+
+  Future<void> stopSession(String sessionId);
+}
+
+class RiverApi implements VideoPlaybackApi {
   RiverApi(String serverUrl)
     : baseUrl = normalizeServerUrl(serverUrl),
       _dio = Dio(
@@ -41,6 +54,7 @@ class RiverApi {
     return url.replaceFirst(RegExp(r'/+$'), '');
   }
 
+  @override
   String absoluteUrl(String path) {
     if (path.startsWith('http://') || path.startsWith('https://')) {
       return path;
@@ -120,6 +134,7 @@ class RiverApi {
     }
   }
 
+  @override
   Future<PlayResponse> playVideo(
     String root,
     String path, {
@@ -146,6 +161,7 @@ class RiverApi {
     }
   }
 
+  @override
   Future<void> stopSession(String sessionId) async {
     try {
       await _dio.delete<void>('/api/video/session/$sessionId');

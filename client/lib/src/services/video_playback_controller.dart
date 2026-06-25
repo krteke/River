@@ -12,27 +12,28 @@ class VideoPlaybackController extends ChangeNotifier {
     required this.api,
     required this.root,
     required this.path,
+    PlaybackEngine? playbackEngine,
   }) {
-    player = Player();
-    videoController = VideoController(player);
-    _errorSubscription = player.stream.error.listen((message) {
+    _playbackEngine = playbackEngine ?? MediaKitPlaybackEngine();
+    _errorSubscription = _playbackEngine.errors.listen((message) {
       errorMessage = message;
       notifyListeners();
     });
   }
 
-  final RiverApi api;
+  final VideoPlaybackApi api;
   final String root;
   final String path;
 
-  late final Player player;
-  late final VideoController videoController;
+  late final PlaybackEngine _playbackEngine;
   late final StreamSubscription<String> _errorSubscription;
 
   PlayResponse? playResponse;
   String? errorMessage;
   bool loading = true;
   bool _disposed = false;
+
+  VideoController get videoController => _playbackEngine.videoController;
 
   Future<void> initialize() async {
     loading = true;
@@ -46,12 +47,8 @@ class VideoPlaybackController extends ChangeNotifier {
         return;
       }
       playResponse = response;
-      await player.open(Media(api.absoluteUrl(response.url)), play: true);
-      if (!response.isHls && response.startSeconds > 0) {
-        await player.seek(
-          Duration(milliseconds: (response.startSeconds * 1000).round()),
-        );
-      }
+      await _playbackEngine.forceSeekable();
+      await _playbackEngine.open(_mediaFor(response));
     } catch (error) {
       errorMessage = error is RiverApiException ? error.message : '播放器初始化失败';
     } finally {
@@ -70,7 +67,58 @@ class VideoPlaybackController extends ChangeNotifier {
       unawaited(api.stopSession(sessionId));
     }
     unawaited(_errorSubscription.cancel());
-    unawaited(player.dispose());
+    unawaited(_playbackEngine.dispose());
     super.dispose();
+  }
+
+  Media _mediaFor(PlayResponse response) {
+    final start = !response.isHls && response.startSeconds > 0
+        ? Duration(milliseconds: (response.startSeconds * 1000).round())
+        : null;
+    return Media(api.absoluteUrl(response.url), start: start);
+  }
+}
+
+abstract interface class PlaybackEngine {
+  VideoController get videoController;
+
+  Stream<String> get errors;
+
+  Future<void> forceSeekable();
+
+  Future<void> open(Media media);
+
+  Future<void> dispose();
+}
+
+class MediaKitPlaybackEngine implements PlaybackEngine {
+  MediaKitPlaybackEngine({Player? player}) : _player = player ?? Player() {
+    videoController = VideoController(_player);
+  }
+
+  final Player _player;
+
+  @override
+  late final VideoController videoController;
+
+  @override
+  Stream<String> get errors => _player.stream.error;
+
+  @override
+  Future<void> forceSeekable() async {
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      await platform.setProperty('force-seekable', 'yes');
+    }
+  }
+
+  @override
+  Future<void> open(Media media) {
+    return _player.open(media, play: true);
+  }
+
+  @override
+  Future<void> dispose() {
+    return _player.dispose();
   }
 }
