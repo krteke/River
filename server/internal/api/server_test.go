@@ -58,7 +58,7 @@ func TestVideoPlayDirect(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Mode != "direct" || body.Mime != "video/mp4" || body.StartSeconds != 59.999 {
+	if body.Mode != "direct" || body.Mime != "video/mp4" || body.StartSeconds != 59.999 || body.DurationSeconds != 60 {
 		t.Fatalf("unexpected play response: %+v", body)
 	}
 	if body.URL != "/api/file?path=%2Fmovie.mp4&root=media" {
@@ -79,7 +79,7 @@ func TestVideoPlayHLSAndServeStream(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Mode != "hls" || body.SessionID == "" {
+	if body.Mode != "hls" || body.SessionID == "" || body.DurationSeconds != 60 {
 		t.Fatalf("unexpected HLS response: %+v", body)
 	}
 

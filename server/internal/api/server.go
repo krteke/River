@@ -28,12 +28,13 @@ type Server struct {
 }
 
 type playResponse struct {
-	Mode         string  `json:"mode"`
-	URL          string  `json:"url"`
-	Mime         string  `json:"mime,omitempty"`
-	SessionID    string  `json:"session_id,omitempty"`
-	Profile      string  `json:"profile,omitempty"`
-	StartSeconds float64 `json:"start_seconds,omitempty"`
+	Mode            string  `json:"mode"`
+	URL             string  `json:"url"`
+	Mime            string  `json:"mime,omitempty"`
+	SessionID       string  `json:"session_id,omitempty"`
+	Profile         string  `json:"profile,omitempty"`
+	StartSeconds    float64 `json:"start_seconds,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 }
 
 func NewServer(fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager) *Server {
@@ -200,10 +201,11 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 	if playback.Mode == media.PlaybackModeDirect {
 		slog.Info("play direct", "root", root, "path", path)
 		writeJson(w, http.StatusOK, playResponse{
-			Mode:         "direct",
-			URL:          fileURL(root, resolved.RelPath),
-			Mime:         filesystem.ContentType(resolved.AbsPath),
-			StartSeconds: startSeconds,
+			Mode:            "direct",
+			URL:             fileURL(root, resolved.RelPath),
+			Mime:            filesystem.ContentType(resolved.AbsPath),
+			StartSeconds:    startSeconds,
+			DurationSeconds: info.Container.Duration,
 		})
 		return
 	}
@@ -226,11 +228,12 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJson(w, http.StatusOK, playResponse{
-		Mode:         "hls",
-		SessionID:    session.ID,
-		URL:          "/stream/" + session.ID + "/master.m3u8",
-		Profile:      session.ProfileName,
-		StartSeconds: session.StartSeconds,
+		Mode:            "hls",
+		SessionID:       session.ID,
+		URL:             "/stream/" + session.ID + "/master.m3u8",
+		Profile:         session.ProfileName,
+		StartSeconds:    session.StartSeconds,
+		DurationSeconds: info.Container.Duration,
 	})
 }
 

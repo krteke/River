@@ -100,6 +100,7 @@ class PlayResponse {
     this.sessionId,
     this.profile,
     this.startSeconds = 0,
+    this.durationSeconds = 0,
   });
 
   final String mode;
@@ -108,6 +109,7 @@ class PlayResponse {
   final String? sessionId;
   final String? profile;
   final double startSeconds;
+  final double durationSeconds;
 
   bool get isHls => mode == 'hls';
 
@@ -119,6 +121,7 @@ class PlayResponse {
       sessionId: json['session_id'] as String?,
       profile: json['profile'] as String?,
       startSeconds: (json['start_seconds'] as num?)?.toDouble() ?? 0,
+      durationSeconds: (json['duration_seconds'] as num?)?.toDouble() ?? 0,
     );
   }
 }

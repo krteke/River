@@ -47,9 +47,11 @@ void main() {
       'url': '/stream/session/master.m3u8',
       'session_id': 'session',
       'profile': '1080p_8m',
+      'duration_seconds': 60,
     });
 
     expect(response.isHls, isTrue);
     expect(response.sessionId, 'session');
+    expect(response.durationSeconds, 60);
   });
 }

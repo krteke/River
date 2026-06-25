@@ -10,11 +10,14 @@ import 'package:river_client/src/services/video_playback_controller.dart';
 void main() {
   test('forces seekable playback before opening direct video', () async {
     final api = _FakePlaybackApi(
-      const PlayResponse(
-        mode: 'direct',
-        url: '/api/file?root=media&path=/movie.mp4',
-        startSeconds: 12.5,
-      ),
+      responses: [
+        const PlayResponse(
+          mode: 'direct',
+          url: '/api/file?root=media&path=/movie.mp4',
+          startSeconds: 12.5,
+          durationSeconds: 60,
+        ),
+      ],
     );
     final engine = _FakePlaybackEngine();
     final controller = VideoPlaybackController(
@@ -33,16 +36,20 @@ void main() {
       'http://river.test/api/file?root=media&path=/movie.mp4',
     );
     expect(engine.openedMedia?.start, const Duration(milliseconds: 12500));
+    expect(controller.duration, const Duration(seconds: 60));
   });
 
   test('does not add a client start offset for HLS sessions', () async {
     final api = _FakePlaybackApi(
-      const PlayResponse(
-        mode: 'hls',
-        url: '/stream/session/master.m3u8',
-        sessionId: 'session',
-        startSeconds: 30,
-      ),
+      responses: [
+        const PlayResponse(
+          mode: 'hls',
+          url: '/stream/session/master.m3u8',
+          sessionId: 'session',
+          startSeconds: 30,
+          durationSeconds: 120,
+        ),
+      ],
     );
     final engine = _FakePlaybackEngine();
     final controller = VideoPlaybackController(
@@ -61,13 +68,61 @@ void main() {
       'http://river.test/stream/session/master.m3u8',
     );
     expect(engine.openedMedia?.start, isNull);
+    expect(controller.usesServerTimeline, isTrue);
+    expect(controller.position, const Duration(seconds: 30));
+    expect(controller.duration, const Duration(seconds: 120));
+  });
+
+  test('restarts HLS session when seeking on the source timeline', () async {
+    final api = _FakePlaybackApi(
+      responses: [
+        const PlayResponse(
+          mode: 'hls',
+          url: '/stream/session-a/master.m3u8',
+          sessionId: 'session-a',
+          durationSeconds: 120,
+        ),
+        const PlayResponse(
+          mode: 'hls',
+          url: '/stream/session-b/master.m3u8',
+          sessionId: 'session-b',
+          startSeconds: 45,
+          durationSeconds: 120,
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.mkv',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    await controller.seekTo(const Duration(seconds: 45));
+    engine.emitPosition(const Duration(seconds: 5));
+    await Future<void>.delayed(Duration.zero);
+    controller.dispose();
+
+    expect(api.calls, hasLength(2));
+    expect(api.calls[1].startSeconds, 45);
+    expect(api.calls[1].replaceSessionId, 'session-a');
+    expect(
+      engine.openedMedia?.uri,
+      'http://river.test/stream/session-b/master.m3u8',
+    );
+    expect(controller.position, const Duration(seconds: 50));
   });
 }
 
 class _FakePlaybackApi implements VideoPlaybackApi {
-  const _FakePlaybackApi(this.response);
+  _FakePlaybackApi({required List<PlayResponse> responses})
+    : _responses = List.of(responses);
 
-  final PlayResponse response;
+  final List<PlayResponse> _responses;
+  final List<_PlayCall> calls = [];
+  final List<String> stoppedSessions = [];
 
   @override
   String absoluteUrl(String path) {
@@ -84,18 +139,33 @@ class _FakePlaybackApi implements VideoPlaybackApi {
     double startSeconds = 0,
     String? replaceSessionId,
   }) async {
-    return response;
+    calls.add(
+      _PlayCall(
+        root: root,
+        path: path,
+        startSeconds: startSeconds,
+        replaceSessionId: replaceSessionId,
+      ),
+    );
+    return _responses.removeAt(0);
   }
 
   @override
-  Future<void> stopSession(String sessionId) async {}
+  Future<void> stopSession(String sessionId) async {
+    stoppedSessions.add(sessionId);
+  }
 }
 
 class _FakePlaybackEngine implements PlaybackEngine {
   final _errors = StreamController<String>.broadcast();
+  final _positions = StreamController<Duration>.broadcast();
+  final _durations = StreamController<Duration>.broadcast();
+  final _playingChanges = StreamController<bool>.broadcast();
   final calls = <String>[];
 
   Media? openedMedia;
+  Duration? seekedPosition;
+  bool _playing = true;
 
   @override
   VideoController get videoController => throw UnsupportedError(
@@ -104,6 +174,18 @@ class _FakePlaybackEngine implements PlaybackEngine {
 
   @override
   Stream<String> get errors => _errors.stream;
+
+  @override
+  Stream<Duration> get positions => _positions.stream;
+
+  @override
+  Stream<Duration> get durations => _durations.stream;
+
+  @override
+  Stream<bool> get playingChanges => _playingChanges.stream;
+
+  @override
+  bool get playing => _playing;
 
   @override
   Future<void> forceSeekable() async {
@@ -117,8 +199,44 @@ class _FakePlaybackEngine implements PlaybackEngine {
   }
 
   @override
+  Future<void> playOrPause() async {
+    calls.add('playOrPause');
+    _playing = !_playing;
+    _playingChanges.add(_playing);
+  }
+
+  @override
+  Future<void> seek(Duration position) async {
+    calls.add('seek');
+    seekedPosition = position;
+  }
+
+  void emitPosition(Duration position) {
+    _positions.add(position);
+  }
+
+  @override
   Future<void> dispose() async {
     calls.add('dispose');
-    await _errors.close();
+    await Future.wait([
+      _errors.close(),
+      _positions.close(),
+      _durations.close(),
+      _playingChanges.close(),
+    ]);
   }
+}
+
+class _PlayCall {
+  const _PlayCall({
+    required this.root,
+    required this.path,
+    required this.startSeconds,
+    required this.replaceSessionId,
+  });
+
+  final String root;
+  final String path;
+  final double startSeconds;
+  final String? replaceSessionId;
 }
