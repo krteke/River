@@ -19,7 +19,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen string `toml:"listen"`
+	Listen   string `toml:"listen"`
+	Password string `toml:"password"`
 }
 
 type RootConfig struct {

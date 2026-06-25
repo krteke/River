@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:river_client/src/models/file_models.dart';
+import 'package:river_client/src/models/server_profile.dart';
 import 'package:river_client/src/services/river_api.dart';
 
 void main() {
@@ -53,5 +54,25 @@ void main() {
     expect(response.isHls, isTrue);
     expect(response.sessionId, 'session');
     expect(response.durationSeconds, 60);
+  });
+
+  test('serializes remembered server password', () {
+    const profile = ServerProfile(
+      id: 'server',
+      name: 'Server',
+      url: 'http://river.test',
+      password: 'secret',
+    );
+
+    final restored = ServerProfile.fromJson(profile.toJson());
+
+    expect(restored.password, 'secret');
+  });
+
+  test('exposes authentication headers when password is configured', () {
+    final api = RiverApi('http://river.test', password: 'secret');
+
+    expect(api.authHeaders, {'X-River-Password': 'secret'});
+    expect(RiverApi('http://river.test').authHeaders, isNull);
   });
 }

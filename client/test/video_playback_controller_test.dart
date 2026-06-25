@@ -35,6 +35,7 @@ void main() {
       engine.openedMedia?.uri,
       'http://river.test/api/file?root=media&path=/movie.mp4',
     );
+    expect(engine.openedMedia?.httpHeaders, {'X-River-Password': 'secret'});
     expect(engine.openedMedia?.start, const Duration(milliseconds: 12500));
     expect(controller.duration, const Duration(seconds: 60));
   });
@@ -175,6 +176,9 @@ class _FakePlaybackApi implements VideoPlaybackApi {
   final List<PlayResponse> _responses;
   final List<_PlayCall> calls = [];
   final List<String> stoppedSessions = [];
+
+  @override
+  Map<String, String>? get authHeaders => {'X-River-Password': 'secret'};
 
   @override
   String absoluteUrl(String path) {

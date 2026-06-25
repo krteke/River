@@ -15,6 +15,8 @@ class RiverApiException implements Exception {
 abstract interface class VideoPlaybackApi {
   String absoluteUrl(String path);
 
+  Map<String, String>? get authHeaders;
+
   Future<PlayResponse> playVideo(
     String root,
     String path, {
@@ -26,17 +28,22 @@ abstract interface class VideoPlaybackApi {
 }
 
 class RiverApi implements VideoPlaybackApi {
-  RiverApi(String serverUrl)
+  RiverApi(String serverUrl, {String password = ''})
     : baseUrl = normalizeServerUrl(serverUrl),
+      _password = password,
       _dio = Dio(
         BaseOptions(
           baseUrl: normalizeServerUrl(serverUrl),
           connectTimeout: const Duration(seconds: 8),
           receiveTimeout: const Duration(seconds: 30),
+          headers: password.isEmpty ? null : {_authPasswordHeader: password},
         ),
       );
 
+  static const _authPasswordHeader = 'X-River-Password';
+
   final String baseUrl;
+  final String _password;
   final Dio _dio;
 
   static String normalizeServerUrl(String value) {
@@ -61,6 +68,10 @@ class RiverApi implements VideoPlaybackApi {
     }
     return '$baseUrl${path.startsWith('/') ? path : '/$path'}';
   }
+
+  @override
+  Map<String, String>? get authHeaders =>
+      _password.isEmpty ? null : {_authPasswordHeader: _password};
 
   String fileUrl(String root, String path) {
     return Uri.parse(
@@ -187,6 +198,11 @@ class RiverApi implements VideoPlaybackApi {
         );
       }
       switch (error.type) {
+        case DioExceptionType.badResponse:
+          if (error.response?.statusCode == 401) {
+            return const RiverApiException('访问密码错误', code: 'unauthorized');
+          }
+          return RiverApiException(fallback);
         case DioExceptionType.connectionTimeout:
         case DioExceptionType.sendTimeout:
         case DioExceptionType.receiveTimeout:
@@ -203,6 +219,7 @@ class RiverApi implements VideoPlaybackApi {
   String _friendlyMessage(String? code, String fallback) {
     return switch (code) {
       'bad_request' => '请求参数无效',
+      'unauthorized' => '访问密码错误',
       'path_forbidden' => '没有权限访问该路径',
       'not_found' => '文件或目录不存在',
       'text_file_too_large' => '文本文件过大，无法在线显示',

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,12 +20,14 @@ import (
 )
 
 const maxTextFileSize = 2 << 20
+const authPasswordHeader = "X-River-Password"
 
 type Server struct {
 	fileService      *filesystem.Service
 	mediaService     *media.Service
 	transcodeManager *transcode.Manager
 	streamService    *streaming.Service
+	password         string
 }
 
 type playResponse struct {
@@ -37,12 +40,13 @@ type playResponse struct {
 	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 }
 
-func NewServer(fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager) *Server {
+func NewServer(fileService *filesystem.Service, mediaService *media.Service, transcodeManager *transcode.Manager, password string) *Server {
 	return &Server{
 		fileService:      fileService,
 		mediaService:     mediaService,
 		transcodeManager: transcodeManager,
 		streamService:    streaming.NewService(transcodeManager),
+		password:         password,
 	}
 }
 
@@ -58,7 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/video/session/{session}", s.videoStopHandler)
 	mux.Handle("GET /stream/{session}/{file}", s.streamService)
 
-	return s.withLog(mux)
+	return s.withLog(s.withAuth(mux))
 }
 
 // example:
@@ -251,6 +255,26 @@ func (s *Server) withLog(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	if s.password == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if constantTimeEqual(r.Header.Get(authPasswordHeader), s.password) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, errUnauthorized)
+	})
+}
+
+func constantTimeEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
 func (s *Server) mediaInfo(ctx context.Context, root, path string) (*filesystem.ResolvedPath, *media.MediaInfo, error) {

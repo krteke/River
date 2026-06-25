@@ -88,16 +88,22 @@ class BrowserController extends ChangeNotifier {
     await RiverApi(url).checkHealth();
   }
 
+  Future<void> testConnectionWithPassword(String url, String password) async {
+    await RiverApi(url, password: password).checkHealth();
+  }
+
   Future<void> saveServer({
     String? id,
     required String name,
     required String url,
+    String password = '',
   }) async {
     final normalizedUrl = RiverApi.normalizeServerUrl(url);
     final profile = ServerProfile(
       id: id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       name: name.trim().isEmpty ? Uri.parse(normalizedUrl).host : name.trim(),
       url: normalizedUrl,
+      password: password,
     );
     final updated = [...servers];
     final index = updated.indexWhere((server) => server.id == profile.id);
@@ -134,7 +140,7 @@ class BrowserController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final nextApi = RiverApi(server.url);
+      final nextApi = RiverApi(server.url, password: server.password);
       await nextApi.checkHealth();
       final nextRoots = await nextApi.getRoots();
       api = nextApi;

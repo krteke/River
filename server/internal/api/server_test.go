@@ -133,7 +133,7 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg)).Handler()
+	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingProbeHandler, "/api/video/info?root=media&path=/movie.mp4")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
 
@@ -144,9 +144,33 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg)).Handler()
+	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingFFmpegHandler, "/api/video/play?root=media&path=/movie.mkv")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
+}
+
+func TestPasswordAuthentication(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "notes.txt"), []byte("hello"))
+	cfg := testConfig(t, root)
+	fileService, err := filesystem.NewService(cfg.Roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := transcode.NewManager(cfg)
+	t.Cleanup(manager.StopAll)
+	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), manager, "secret").Handler()
+
+	response := request(t, handler, "/api/health")
+	assertAPIError(t, response, http.StatusUnauthorized, "unauthorized")
+
+	request := httptest.NewRequest(http.MethodGet, "/api/file?root=media&path=/notes.txt", nil)
+	request.Header.Set(authPasswordHeader, "secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "hello" {
+		t.Fatalf("unexpected authenticated response: status=%d body=%q", response.Code, response.Body.String())
+	}
 }
 
 func testHandler(t *testing.T, root string) (http.Handler, *transcode.Manager) {
@@ -158,7 +182,7 @@ func testHandler(t *testing.T, root string) (http.Handler, *transcode.Manager) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), manager).Handler(), manager
+	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), manager, "").Handler(), manager
 }
 
 func testConfig(t *testing.T, root string) *config.Config {

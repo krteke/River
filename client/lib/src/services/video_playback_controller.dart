@@ -178,7 +178,11 @@ class VideoPlaybackController extends ChangeNotifier {
     final start = !response.isHls && response.startSeconds > 0
         ? Duration(milliseconds: (response.startSeconds * 1000).round())
         : null;
-    return Media(api.absoluteUrl(response.url), start: start);
+    return Media(
+      api.absoluteUrl(response.url),
+      start: start,
+      httpHeaders: api.authHeaders,
+    );
   }
 
   Duration _displayPosition(Duration enginePosition) {

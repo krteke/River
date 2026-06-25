@@ -42,7 +42,21 @@ class ServerManagerDialog extends StatelessWidget {
                         : null,
                   ),
                   title: Text(server.name),
-                  subtitle: Text(server.url),
+                  subtitle: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          server.url,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (server.password.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        const Icon(Icons.lock_outline, size: 16),
+                      ],
+                    ],
+                  ),
                   onTap: () async {
                     try {
                       await controller.connect(server);
@@ -103,6 +117,7 @@ class ServerManagerDialog extends StatelessWidget {
         id: server?.id,
         name: result.name,
         url: result.url,
+        password: result.password,
       );
       if (context.mounted) {
         Navigator.pop(context);
@@ -158,9 +173,11 @@ class ServerEditorDialog extends StatefulWidget {
 class _ServerEditorDialogState extends State<ServerEditorDialog> {
   late final TextEditingController _nameController;
   late final TextEditingController _urlController;
+  late final TextEditingController _passwordController;
   final _formKey = GlobalKey<FormState>();
   bool _testing = false;
   bool _connectionPassed = false;
+  bool _obscurePassword = true;
   String? _testMessage;
 
   @override
@@ -170,12 +187,16 @@ class _ServerEditorDialogState extends State<ServerEditorDialog> {
     _urlController = TextEditingController(
       text: widget.server?.url ?? 'http://',
     );
+    _passwordController = TextEditingController(
+      text: widget.server?.password ?? '',
+    );
   }
 
   @override
   void dispose() {
     _nameController.dispose();
     _urlController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
@@ -216,6 +237,34 @@ class _ServerEditorDialogState extends State<ServerEditorDialog> {
                     return error.message;
                   }
                 },
+                onChanged: (_) {
+                  setState(() {
+                    _connectionPassed = false;
+                    _testMessage = null;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: _obscurePassword,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  labelText: '访问密码',
+                  hintText: '服务器未配置密码可留空',
+                  prefixIcon: const Icon(Icons.password_outlined),
+                  suffixIcon: IconButton(
+                    tooltip: _obscurePassword ? '显示密码' : '隐藏密码',
+                    onPressed: () =>
+                        setState(() => _obscurePassword = !_obscurePassword),
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                    ),
+                  ),
+                ),
                 onChanged: (_) {
                   setState(() {
                     _connectionPassed = false;
@@ -268,6 +317,7 @@ class _ServerEditorDialogState extends State<ServerEditorDialog> {
                 _ServerFormValue(
                   name: _nameController.text,
                   url: _urlController.text,
+                  password: _passwordController.text,
                 ),
               );
             }
@@ -287,7 +337,10 @@ class _ServerEditorDialogState extends State<ServerEditorDialog> {
       _testMessage = null;
     });
     try {
-      await widget.controller.testConnection(_urlController.text);
+      await widget.controller.testConnectionWithPassword(
+        _urlController.text,
+        _passwordController.text,
+      );
       setState(() {
         _connectionPassed = true;
         _testMessage = '连接成功';
@@ -306,8 +359,13 @@ class _ServerEditorDialogState extends State<ServerEditorDialog> {
 }
 
 class _ServerFormValue {
-  const _ServerFormValue({required this.name, required this.url});
+  const _ServerFormValue({
+    required this.name,
+    required this.url,
+    required this.password,
+  });
 
   final String name;
   final String url;
+  final String password;
 }

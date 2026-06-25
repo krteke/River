@@ -46,7 +46,7 @@ func main() {
 	defer stop()
 	transcodeManager.StartCleanupLoop(ctx)
 
-	apiServer := api.NewServer(fileService, mediaService, transcodeManager)
+	apiServer := api.NewServer(fileService, mediaService, transcodeManager, cfg.Server.Password)
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           apiServer.Handler(),

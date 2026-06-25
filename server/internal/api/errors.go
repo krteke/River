@@ -13,6 +13,7 @@ import (
 
 var (
 	errBadRequest          = errors.New("bad request")
+	errUnauthorized        = errors.New("unauthorized")
 	errTextFileTooLarge    = errors.New("text file too large")
 	errUnsupportedFileType = errors.New("unsupported file type")
 )
@@ -23,6 +24,10 @@ func writeError(w http.ResponseWriter, err error) {
 	var message string
 
 	switch {
+	case errors.Is(err, errUnauthorized):
+		code = "unauthorized"
+		status = http.StatusUnauthorized
+		message = "missing or invalid password"
 	case errors.Is(err, errBadRequest):
 		code = "bad_request"
 		status = http.StatusBadRequest

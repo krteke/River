@@ -89,6 +89,7 @@ class FilePreview extends StatelessWidget {
                   controller.selectedRoot!.id,
                   entry.path,
                 ),
+                headers: controller.api!.authHeaders,
                 fit: BoxFit.contain,
                 errorBuilder: (_, _, _) => const _PreviewMessage(
                   icon: Icons.broken_image_outlined,
