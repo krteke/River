@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../services/river_api.dart';
@@ -30,6 +33,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   Duration? _gestureBasePosition;
   Duration _gestureOffset = Duration.zero;
   double _gestureDelta = 0;
+  bool _fullscreen = false;
 
   @override
   void initState() {
@@ -43,8 +47,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    unawaited(_exitFullscreen());
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (_fullscreen) {
+      await _exitFullscreen();
+      return;
+    }
+    setState(() => _fullscreen = true);
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
+  Future<void> _exitFullscreen() async {
+    if (!_fullscreen) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _fullscreen = false);
+    } else {
+      _fullscreen = false;
+    }
+    await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   }
 
   void _handleSeekDragStart(DragStartDetails details) {
@@ -87,11 +118,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        title: Text(widget.title),
-      ),
       body: AnimatedBuilder(
         animation: _controller,
         builder: (context, _) {
@@ -135,14 +161,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             children: [
               Center(
                 child: Video(
+                  key: const ValueKey('river-video-no-controls'),
                   controller: _controller.videoController,
                   fit: BoxFit.contain,
-                  controls: null,
+                  controls: _emptyVideoControls,
                 ),
               ),
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
+                  onTap: () {},
                   onHorizontalDragStart: _handleSeekDragStart,
                   onHorizontalDragUpdate: _handleSeekDragUpdate,
                   onHorizontalDragEnd: _handleSeekDragEnd,
@@ -155,7 +183,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                   },
                 ),
               ),
-              _UnifiedVideoControls(controller: _controller),
+              _UnifiedVideoControls(
+                controller: _controller,
+                fullscreen: _fullscreen,
+                onBack: () => Navigator.of(context).maybePop(),
+                onToggleFullscreen: _toggleFullscreen,
+              ),
               if (_gestureBasePosition != null)
                 _SeekGestureOverlay(
                   offset: _gestureOffset,
@@ -173,16 +206,84 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 }
 
 class _UnifiedVideoControls extends StatefulWidget {
-  const _UnifiedVideoControls({required this.controller});
+  const _UnifiedVideoControls({
+    required this.controller,
+    required this.fullscreen,
+    required this.onBack,
+    required this.onToggleFullscreen,
+  });
 
   final VideoPlaybackController controller;
+  final bool fullscreen;
+  final VoidCallback onBack;
+  final VoidCallback onToggleFullscreen;
 
   @override
   State<_UnifiedVideoControls> createState() => _UnifiedVideoControlsState();
 }
 
+Widget _emptyVideoControls(VideoState state) => const SizedBox.shrink();
+
 class _UnifiedVideoControlsState extends State<_UnifiedVideoControls> {
+  static const _hideDelay = Duration(seconds: 3);
+
   double? _dragValue;
+  bool _visible = true;
+  Timer? _hideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleHide();
+  }
+
+  @override
+  void didUpdateWidget(covariant _UnifiedVideoControls oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.controller.seeking || _dragValue != null) {
+      _showControls(scheduleHide: false);
+    } else if (_visible) {
+      _scheduleHide();
+    }
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    super.dispose();
+  }
+
+  void _toggleControls() {
+    if (_visible) {
+      _hideTimer?.cancel();
+      setState(() => _visible = false);
+      return;
+    }
+    _showControls();
+  }
+
+  void _showControls({bool scheduleHide = true}) {
+    if (!_visible) {
+      setState(() => _visible = true);
+    }
+    if (scheduleHide) {
+      _scheduleHide();
+    } else {
+      _hideTimer?.cancel();
+    }
+  }
+
+  void _scheduleHide() {
+    _hideTimer?.cancel();
+    if (widget.controller.seeking || _dragValue != null) {
+      return;
+    }
+    _hideTimer = Timer(_hideDelay, () {
+      if (mounted) {
+        setState(() => _visible = false);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -194,116 +295,304 @@ class _UnifiedVideoControlsState extends State<_UnifiedVideoControls> {
     final sliderMax = durationMs > 0 ? durationMs.toDouble() : 1.0;
     final sliderValue = positionMs.clamp(0.0, sliderMax);
 
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [Colors.black87, Colors.transparent],
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 32, 12, 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (controller.seeking)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 8),
-                    child: LinearProgressIndicator(minHeight: 2),
-                  ),
-                Row(
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: _toggleControls,
+        child: Stack(
+          children: [
+            IgnorePointer(
+              ignoring: !_visible,
+              child: AnimatedOpacity(
+                opacity: _visible ? 1 : 0,
+                duration: const Duration(milliseconds: 180),
+                child: Stack(
                   children: [
-                    IconButton(
-                      color: Colors.white,
-                      tooltip: '后退 10 秒',
-                      onPressed: controller.seeking
-                          ? null
-                          : () => controller.seekRelative(
-                              const Duration(seconds: -10),
-                            ),
-                      icon: const Icon(Icons.replay_10_rounded),
-                    ),
-                    IconButton.filled(
-                      tooltip: controller.playing ? '暂停' : '播放',
-                      onPressed: controller.seeking
-                          ? null
-                          : controller.togglePlay,
-                      icon: Icon(
-                        controller.playing
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTap: _toggleControls,
                       ),
                     ),
-                    IconButton(
-                      color: Colors.white,
-                      tooltip: '快进 10 秒',
-                      onPressed: controller.seeking
-                          ? null
-                          : () => controller.seekRelative(
-                              const Duration(seconds: 10),
-                            ),
-                      icon: const Icon(Icons.forward_10_rounded),
-                    ),
-                    const Spacer(),
-                    _SpeedMenu(controller: controller),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Text(
-                      _formatDuration(
-                        Duration(milliseconds: sliderValue.round()),
+                    const Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [Colors.black87, Colors.transparent],
+                            stops: [0, 1],
+                          ),
+                        ),
                       ),
-                      style: const TextStyle(color: Colors.white70),
                     ),
-                    Expanded(
-                      child: Slider(
-                        value: sliderValue,
-                        max: sliderMax,
-                        onChangeStart: enabled
-                            ? (value) => setState(() => _dragValue = value)
-                            : null,
-                        onChanged: enabled
-                            ? (value) => setState(() => _dragValue = value)
-                            : null,
-                        onChangeEnd: enabled
-                            ? (value) {
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: SafeArea(
+                        top: false,
+                        bottom: false,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 32, 12, 10),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _scheduleHide,
+                            child: _ControlPanel(
+                              controller: controller,
+                              enabled: enabled,
+                              sliderValue: sliderValue,
+                              sliderMax: sliderMax,
+                              onBack: widget.onBack,
+                              onShowControls: _showControls,
+                              onDragStart: (value) {
+                                setState(() => _dragValue = value);
+                                _showControls(scheduleHide: false);
+                              },
+                              onDragUpdate: (value) {
+                                setState(() => _dragValue = value);
+                              },
+                              onDragEnd: (value) {
                                 setState(() => _dragValue = null);
                                 widget.controller.seekTo(
                                   Duration(milliseconds: value.round()),
                                 );
-                              }
-                            : null,
+                                _scheduleHide();
+                              },
+                              onToggleFullscreen: widget.onToggleFullscreen,
+                              fullscreen: widget.fullscreen,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                    Text(
-                      _formatDuration(controller.duration),
-                      style: const TextStyle(color: Colors.white70),
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
-          ),
+            if (!_visible)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _BottomProgressBar(
+                  value: sliderValue,
+                  max: sliderMax,
+                  seeking: controller.seeking,
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 }
 
+class _ControlPanel extends StatelessWidget {
+  const _ControlPanel({
+    required this.controller,
+    required this.enabled,
+    required this.sliderValue,
+    required this.sliderMax,
+    required this.onBack,
+    required this.onShowControls,
+    required this.onDragStart,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+    required this.onToggleFullscreen,
+    required this.fullscreen,
+  });
+
+  final VideoPlaybackController controller;
+  final bool enabled;
+  final double sliderValue;
+  final double sliderMax;
+  final VoidCallback onBack;
+  final VoidCallback onShowControls;
+  final ValueChanged<double> onDragStart;
+  final ValueChanged<double> onDragUpdate;
+  final ValueChanged<double> onDragEnd;
+  final VoidCallback onToggleFullscreen;
+  final bool fullscreen;
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    return IconTheme(
+      data: const IconThemeData(color: Colors.white),
+      child: DefaultTextStyle(
+        style: const TextStyle(color: Colors.white70, fontSize: 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (controller.seeking)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: LinearProgressIndicator(minHeight: 2),
+              ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: '返回',
+                    color: Colors.white,
+                    onPressed: onBack,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _formatDuration(
+                      Duration(milliseconds: sliderValue.round()),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text('/ ${_formatDuration(controller.duration)}'),
+                  const Spacer(),
+                  _SpeedMenu(
+                    controller: controller,
+                    onSelected: onShowControls,
+                  ),
+                  const SizedBox(width: 12),
+                  IconButton(
+                    tooltip: fullscreen ? '退出全屏' : '全屏',
+                    color: Colors.white,
+                    onPressed: onToggleFullscreen,
+                    icon: Icon(
+                      fullscreen
+                          ? Icons.fullscreen_exit_rounded
+                          : Icons.fullscreen_rounded,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 2),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _ControlButton(
+                  tooltip: '后退 10 秒',
+                  onPressed: controller.seeking
+                      ? null
+                      : () {
+                          onShowControls();
+                          controller.seekRelative(const Duration(seconds: -10));
+                        },
+                  icon: Icons.replay_10_rounded,
+                ),
+                const SizedBox(width: 20),
+                IconButton.filled(
+                  tooltip: controller.playing ? '暂停' : '播放',
+                  iconSize: 36,
+                  onPressed: controller.seeking
+                      ? null
+                      : () {
+                          onShowControls();
+                          controller.togglePlay();
+                        },
+                  icon: Icon(
+                    controller.playing
+                        ? Icons.pause_rounded
+                        : Icons.play_arrow_rounded,
+                  ),
+                ),
+                const SizedBox(width: 20),
+                _ControlButton(
+                  tooltip: '快进 10 秒',
+                  onPressed: controller.seeking
+                      ? null
+                      : () {
+                          onShowControls();
+                          controller.seekRelative(const Duration(seconds: 10));
+                        },
+                  icon: Icons.forward_10_rounded,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+                activeTrackColor: Colors.white,
+                inactiveTrackColor: Colors.white30,
+                thumbColor: Colors.white,
+                overlayColor: Colors.white24,
+                disabledActiveTrackColor: Colors.white54,
+                disabledInactiveTrackColor: Colors.white24,
+                disabledThumbColor: Colors.white54,
+              ),
+              child: Slider(
+                value: sliderValue,
+                max: sliderMax,
+                onChangeStart: enabled ? onDragStart : null,
+                onChanged: enabled ? onDragUpdate : null,
+                onChangeEnd: enabled ? onDragEnd : null,
+              ),
+            ),
+            SizedBox(height: bottomInset),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ControlButton extends StatelessWidget {
+  const _ControlButton({
+    required this.tooltip,
+    required this.onPressed,
+    required this.icon,
+  });
+
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      iconSize: 30,
+      color: Colors.white,
+      onPressed: onPressed,
+      icon: Icon(icon),
+    );
+  }
+}
+
+class _BottomProgressBar extends StatelessWidget {
+  const _BottomProgressBar({
+    required this.value,
+    required this.max,
+    required this.seeking,
+  });
+
+  final double value;
+  final double max;
+  final bool seeking;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = max <= 0 ? 0.0 : (value / max).clamp(0.0, 1.0);
+    return LinearProgressIndicator(
+      minHeight: 3,
+      value: seeking ? null : progress,
+      backgroundColor: Colors.white24,
+      valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+    );
+  }
+}
+
 class _SpeedMenu extends StatelessWidget {
-  const _SpeedMenu({required this.controller});
+  const _SpeedMenu({required this.controller, required this.onSelected});
 
   static const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
   final VideoPlaybackController controller;
+  final VoidCallback onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -311,7 +600,10 @@ class _SpeedMenu extends StatelessWidget {
       tooltip: '播放速度',
       enabled: !controller.seeking,
       initialValue: controller.playbackRate,
-      onSelected: controller.setPlaybackRate,
+      onSelected: (speed) {
+        onSelected();
+        controller.setPlaybackRate(speed);
+      },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
