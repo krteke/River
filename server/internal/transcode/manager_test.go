@@ -3,6 +3,7 @@ package transcode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,7 +123,7 @@ func TestCleanupIdleRemovesSessionAndFiles(t *testing.T) {
 func TestFFmpegArgsCreateIndependentKeyframeAlignedHLS(t *testing.T) {
 	cfg := testConfig(t, "/usr/bin/ffmpeg")
 	profile := cfg.Profiles[0]
-	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 12.5)
+	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 12.5, transcodeModeSoftware)
 	joined := strings.Join(args, " ")
 
 	for _, expected := range []string{
@@ -134,6 +135,84 @@ func TestFFmpegArgsCreateIndependentKeyframeAlignedHLS(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing %q in ffmpeg args: %s", expected, joined)
 		}
+	}
+}
+
+func TestHardwareFFmpegArgsUseConfiguredParameters(t *testing.T) {
+	cfg := testConfig(t, "/usr/bin/ffmpeg")
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.VideoCodec = "h264_nvenc"
+	cfg.Hardware.InputArgs = []string{"-hwaccel", "auto"}
+	cfg.Hardware.VideoFilter = "scale_cuda=1280:-2"
+	cfg.Hardware.OutputArgs = []string{"-preset", "p4", "-pix_fmt", "yuv420p"}
+	profile := cfg.Profiles[0]
+
+	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 0, transcodeModeHardware)
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-hwaccel auto -i /movie.mkv",
+		"-vf scale_cuda=1280:-2",
+		"-c:v h264_nvenc",
+		"-preset p4",
+		"-pix_fmt yuv420p",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing %q in ffmpeg args: %s", expected, joined)
+		}
+	}
+}
+
+func TestVAAPIFFmpegArgsUseBackendDefaults(t *testing.T) {
+	cfg := testConfig(t, "/usr/bin/ffmpeg")
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.VideoCodec = "h264_vaapi"
+	cfg.Hardware.Device = "/dev/dri/renderD128"
+	cfg.Hardware.InputArgs = []string{}
+	cfg.Hardware.VideoFilter = ""
+	profile := cfg.Profiles[0]
+
+	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 0, transcodeModeHardware)
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-vaapi_device /dev/dri/renderD128",
+		"-hwaccel vaapi",
+		"-hwaccel_output_format vaapi",
+		"-i /movie.mkv",
+		"-vf scale_vaapi=w=1920:h=-2:format=nv12",
+		"-c:v h264_vaapi",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing %q in ffmpeg args: %s", expected, joined)
+		}
+	}
+}
+
+func TestManagerFallsBackToSoftwareWhenHardwareFails(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ffmpeg.log")
+	cfg := testConfig(t, fakeFFmpegWithHardwareFailure(t, logPath))
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.VideoCodec = "h264_nvenc"
+	cfg.Hardware.FallbackToSoftware = true
+	manager := NewManager(cfg)
+	t.Cleanup(manager.StopAll)
+
+	session, err := manager.Start(context.Background(), StartOptions{SourcePath: "/movie.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.mode != transcodeModeSoftware {
+		t.Fatalf("expected software fallback mode, got %s", session.mode)
+	}
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := string(content)
+	if !strings.Contains(joined, "h264_nvenc") || !strings.Contains(joined, "libx264") {
+		t.Fatalf("expected hardware and software ffmpeg attempts, got %s", joined)
 	}
 }
 
@@ -157,6 +236,29 @@ printf 'segment' > "$dir/seg_000000.ts"
 printf '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg_000000.ts\n' > "$last"
 exec sleep 30
 `
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func fakeFFmpegWithHardwareFailure(t *testing.T, logPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ffmpeg")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+case "$*" in
+*h264_nvenc*)
+  echo 'hardware encoder failed' >&2
+  exit 1
+  ;;
+esac
+for last do :; done
+dir=${last%%/*}
+printf 'segment' > "$dir/seg_000000.ts"
+printf '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg_000000.ts\n' > "$last"
+exec sleep 30
+`, logPath)
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

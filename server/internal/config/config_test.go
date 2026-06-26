@@ -26,3 +26,15 @@ func TestValidateRequiresThumbnailCacheDir(t *testing.T) {
 		t.Fatalf("expected thumbnail cache validation error, got %v", err)
 	}
 }
+
+func TestValidateRequiresHardwareVideoCodecWhenEnabled(t *testing.T) {
+	cfg := Default()
+	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.VideoCodec = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "hardware_transcode.video_codec") {
+		t.Fatalf("expected hardware video codec validation error, got %v", err)
+	}
+}

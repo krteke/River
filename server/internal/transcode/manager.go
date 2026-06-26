@@ -29,6 +29,13 @@ var (
 
 const transcodeReadyTimeout = 15 * time.Second
 
+type transcodeMode string
+
+const (
+	transcodeModeSoftware transcodeMode = "software"
+	transcodeModeHardware transcodeMode = "hardware"
+)
+
 type StartOptions struct {
 	RootID           string
 	RelPath          string
@@ -50,6 +57,7 @@ type StreamSession struct {
 	Status       string    `json:"status"`
 
 	sourcePath string
+	mode       transcodeMode
 	cmd        *exec.Cmd
 	cancel     context.CancelFunc
 	stderr     *tailBuffer
@@ -121,43 +129,89 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 		return nil, err
 	}
 
-	// FFmpeg 不能绑定到 HTTP 请求的 context，否则客户端拿到播放地址后请求结束会中断转码。
-	processCtx, cancel := context.WithCancel(context.Background())
-	session.cancel = cancel
-	args := buildFFmpegArgs(m.cfg, profile, options.SourcePath, tempDir, options.StartSeconds)
-	cmd := exec.CommandContext(processCtx, m.cfg.FFmpeg.FFmpegPath, args...)
-	cmd.Stderr = session.stderr
-	session.cmd = cmd
-
 	m.mu.Lock()
 	if m.runningLocked() >= m.cfg.FFmpeg.MaxConcurrentJobs {
 		m.mu.Unlock()
-		cancel()
 		_ = os.RemoveAll(tempDir)
 		return nil, ErrQueueFull
 	}
 	m.sessions[sessionID] = session
+	m.mu.Unlock()
+
+	modes := m.transcodeModes()
+	var lastErr error
+	for i, mode := range modes {
+		if i > 0 {
+			m.prepareFallback(session)
+		}
+		if err := m.startProcess(session, mode, buildFFmpegArgs(m.cfg, profile, options.SourcePath, tempDir, options.StartSeconds, mode)); err != nil {
+			lastErr = err
+		} else if err := m.waitReady(ctx, session); err != nil {
+			lastErr = err
+			m.stopProcess(session)
+		} else {
+			slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds, "mode", mode)
+			return session, nil
+		}
+
+		if mode == transcodeModeHardware && i+1 < len(modes) {
+			slog.WarnContext(ctx, "hardware transcode failed, falling back to software", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "error", lastErr)
+			continue
+		}
+		m.Stop(session.ID)
+		return nil, lastErr
+	}
+
+	m.Stop(session.ID)
+	return nil, lastErr
+}
+
+func (m *Manager) transcodeModes() []transcodeMode {
+	if !m.cfg.Hardware.Enabled {
+		return []transcodeMode{transcodeModeSoftware}
+	}
+	if m.cfg.Hardware.FallbackToSoftware {
+		return []transcodeMode{transcodeModeHardware, transcodeModeSoftware}
+	}
+	return []transcodeMode{transcodeModeHardware}
+}
+
+func (m *Manager) startProcess(session *StreamSession, mode transcodeMode, args []string) error {
+	// FFmpeg 不能绑定到 HTTP 请求的 context，否则客户端拿到播放地址后请求结束会中断转码。
+	processCtx, cancel := context.WithCancel(context.Background())
+	stderr := newTailBuffer(64 * 1024)
+	done := make(chan struct{})
+	cmd := exec.CommandContext(processCtx, m.cfg.FFmpeg.FFmpegPath, args...)
+	cmd.Stderr = stderr
+
+	m.mu.Lock()
+	session.mode = mode
+	session.cancel = cancel
+	session.stderr = stderr
+	session.done = done
+	session.cmd = cmd
+	session.Status = "starting"
 	if err := cmd.Start(); err != nil {
-		delete(m.sessions, sessionID)
+		session.Status = "failed"
 		m.mu.Unlock()
 		cancel()
-		_ = os.RemoveAll(tempDir)
+		close(done)
 		var execErr *exec.Error
 		if errors.As(err, &execErr) || errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %v", ErrFFmpegNotAvailable, err)
+			return fmt.Errorf("%w: %v", ErrFFmpegNotAvailable, err)
 		}
-		return nil, err
+		return err
 	}
 	session.Status = "running"
 	m.mu.Unlock()
 
-	go m.wait(session)
-	if err := m.waitReady(ctx, session); err != nil {
-		m.Stop(session.ID)
-		return nil, err
-	}
-	slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds)
-	return session, nil
+	go m.wait(session, cmd, stderr, done, mode)
+	return nil
+}
+
+func (m *Manager) prepareFallback(session *StreamSession) {
+	m.stopProcess(session)
+	_ = cleanupHLSFiles(session.TempDir)
 }
 
 func (m *Manager) OpenStreamFile(sessionID, name string) (*os.File, error) {
@@ -216,6 +270,11 @@ func (m *Manager) StopAll() {
 }
 
 func (m *Manager) stopSession(session *StreamSession) {
+	m.stopProcess(session)
+	_ = os.RemoveAll(session.TempDir)
+}
+
+func (m *Manager) stopProcess(session *StreamSession) {
 	if session.cancel != nil {
 		session.cancel()
 	}
@@ -237,7 +296,6 @@ func (m *Manager) stopSession(session *StreamSession) {
 		case <-time.After(time.Second):
 		}
 	}
-	_ = os.RemoveAll(session.TempDir)
 }
 
 func (m *Manager) cleanupIdle() {
@@ -299,7 +357,7 @@ func writeMasterPlaylist(path string, profile config.ProfileConfig) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePath, tempDir string, startSeconds float64) []string {
+func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePath, tempDir string, startSeconds float64, mode transcodeMode) []string {
 	segmentDuration := profile.SegmentDuration
 	if segmentDuration <= 0 {
 		segmentDuration = cfg.Transcode.SegmentDurationSeconds
@@ -331,19 +389,25 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 	if startSeconds > 0 {
 		args = append(args, "-ss", formatStartSeconds(startSeconds))
 	}
+	if mode == transcodeModeHardware {
+		args = append(args, hardwareInputArgs(cfg)...)
+	}
 	args = append(args,
 		"-i", sourcePath,
 		"-map", "0:v:0?",
 		"-map", "0:a:0?",
-		"-vf", fmt.Sprintf("scale='min(%d,iw)':-2", width),
-		"-c:v", valueOrDefault(profile.VideoCodec, "libx264"),
-		"-preset", preset,
+	)
+	args = append(args, videoTranscodeArgs(cfg, profile, mode, width, preset)...)
+	args = append(args,
 		"-b:v", videoBitrate,
 		"-maxrate", videoBitrate,
 		"-bufsize", bitrateBufSize(videoBitrate),
-		"-profile:v", "high",
-		"-pix_fmt", "yuv420p",
 		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", segmentDuration),
+	)
+	if mode == transcodeModeHardware {
+		args = append(args, cfg.Hardware.OutputArgs...)
+	}
+	args = append(args,
 		"-c:a", valueOrDefault(profile.AudioCodec, "aac"),
 		"-b:a", audioBitrate,
 		"-ac", fmt.Sprintf("%d", audioChannels),
@@ -355,6 +419,58 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 		filepath.Join(tempDir, "index.m3u8"),
 	)
 	return args
+}
+
+func videoTranscodeArgs(cfg *config.Config, profile config.ProfileConfig, mode transcodeMode, width int, preset string) []string {
+	filter := defaultVideoFilter(width)
+	if mode == transcodeModeHardware {
+		filter = hardwareVideoFilter(cfg, width)
+		args := []string{
+			"-vf", filter,
+			"-c:v", cfg.Hardware.VideoCodec,
+		}
+		return args
+	}
+
+	return []string{
+		"-vf", filter,
+		"-c:v", valueOrDefault(profile.VideoCodec, "libx264"),
+		"-preset", preset,
+		"-profile:v", "high",
+		"-pix_fmt", "yuv420p",
+	}
+}
+
+func defaultVideoFilter(width int) string {
+	return fmt.Sprintf("scale='min(%d,iw)':-2", width)
+}
+
+func hardwareInputArgs(cfg *config.Config) []string {
+	if len(cfg.Hardware.InputArgs) > 0 {
+		return cfg.Hardware.InputArgs
+	}
+	if isVAAPIEncoder(cfg.Hardware.VideoCodec) {
+		args := []string{}
+		if cfg.Hardware.Device != "" {
+			args = append(args, "-vaapi_device", cfg.Hardware.Device)
+		}
+		return append(args, "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi")
+	}
+	return nil
+}
+
+func hardwareVideoFilter(cfg *config.Config, width int) string {
+	if cfg.Hardware.VideoFilter != "" {
+		return cfg.Hardware.VideoFilter
+	}
+	if isVAAPIEncoder(cfg.Hardware.VideoCodec) {
+		return fmt.Sprintf("scale_vaapi=w=%d:h=-2:format=nv12", width)
+	}
+	return defaultVideoFilter(width)
+}
+
+func isVAAPIEncoder(codec string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(codec)), "_vaapi")
 }
 
 func (b *tailBuffer) Write(p []byte) (int, error) {
@@ -373,11 +489,34 @@ func (b *tailBuffer) String() string {
 	return string(b.buf)
 }
 
-func (m *Manager) wait(session *StreamSession) {
-	defer close(session.done)
-	err := session.cmd.Wait()
+func cleanupHLSFiles(tempDir string) error {
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "master.m3u8" {
+			continue
+		}
+		if name == "index.m3u8" || strings.HasPrefix(name, "seg_") {
+			if err := os.Remove(filepath.Join(tempDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Manager) wait(session *StreamSession, cmd *exec.Cmd, stderr *tailBuffer, done chan struct{}, mode transcodeMode) {
+	defer close(done)
+	err := cmd.Wait()
 	m.mu.Lock()
 	if current, ok := m.sessions[session.ID]; ok {
+		if current.cmd != cmd {
+			m.mu.Unlock()
+			return
+		}
 		if err != nil {
 			current.Status = "failed"
 			exitCode := -1
@@ -389,9 +528,10 @@ func (m *Manager) wait(session *StreamSession) {
 				"session_id", session.ID,
 				"source", session.sourcePath,
 				"profile", session.ProfileName,
+				"mode", mode,
 				"exit_code", exitCode,
 				"error", err,
-				"stderr", session.stderr.String(),
+				"stderr", stderr.String(),
 			)
 		} else {
 			current.Status = "exited"

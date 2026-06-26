@@ -14,6 +14,7 @@ type Config struct {
 	Roots     []RootConfig    `toml:"roots"`
 	FFmpeg    FFmpegConfig    `toml:"ffmpeg"`
 	Transcode TranscodeConfig `toml:"transcode"`
+	Hardware  HardwareConfig  `toml:"hardware_transcode"`
 	Thumbnail ThumbnailConfig `toml:"thumbnail"`
 	Playback  PlaybackConfig  `toml:"playback"`
 	Profiles  []ProfileConfig `toml:"profiles"`
@@ -40,6 +41,16 @@ type TranscodeConfig struct {
 	TempDir                string `toml:"temp_dir"`
 	IdleTimeoutSeconds     int    `toml:"idle_timeout_seconds"`
 	SegmentDurationSeconds int    `toml:"segment_duration_seconds"`
+}
+
+type HardwareConfig struct {
+	Enabled            bool     `toml:"enabled"`
+	VideoCodec         string   `toml:"video_codec"`
+	Device             string   `toml:"device"`
+	VideoFilter        string   `toml:"video_filter"`
+	InputArgs          []string `toml:"input_args"`
+	OutputArgs         []string `toml:"output_args"`
+	FallbackToSoftware bool     `toml:"fallback_to_software"`
 }
 
 type ThumbnailConfig struct {
@@ -90,6 +101,11 @@ func Default() Config {
 			TempDir:                filepath.Join(os.TempDir(), "/temp-transcode"),
 			IdleTimeoutSeconds:     60,
 			SegmentDurationSeconds: 6,
+		},
+		Hardware: HardwareConfig{
+			VideoCodec:         "h264_nvenc",
+			Device:             "/dev/dri/renderD128",
+			FallbackToSoftware: true,
 		},
 		Thumbnail: ThumbnailConfig{
 			CacheDir:               filepath.Join(os.TempDir(), "river-thumbnails"),
@@ -163,6 +179,9 @@ func (c Config) Validate() error {
 	}
 	if c.Transcode.SegmentDurationSeconds <= 0 {
 		return errors.New("transcode.segment_duration_seconds must be greater than 0")
+	}
+	if c.Hardware.Enabled && c.Hardware.VideoCodec == "" {
+		return errors.New("hardware_transcode.video_codec is required when hardware transcoding is enabled")
 	}
 	if c.Thumbnail.CacheDir == "" {
 		return errors.New("thumbnail.cache_dir is required")

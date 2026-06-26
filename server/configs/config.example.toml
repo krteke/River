@@ -18,6 +18,22 @@ temp_dir = "/tmp/lightfm-transcode"
 idle_timeout_seconds = 90
 segment_duration_seconds = 6
 
+[hardware_transcode]
+# 可选。除非服务器的 FFmpeg 构建版本和 GPU 驱动支持它，否则保持禁用。
+enabled = false
+# 常见示例：h264_nvenc, h264_qsv, h264_vaapi, h264_videotoolbox。
+video_codec = "h264_nvenc"
+# VAAPI 示例：video_codec = "h264_vaapi", device = "/dev/dri/renderD128"。
+device = "/dev/dri/renderD128"
+# 留空时会根据 video_codec 选择默认 filter；h264_vaapi 会使用 scale_vaapi。
+video_filter = ""
+# 留空时会根据 video_codec 选择默认输入参数；h264_vaapi 会自动添加 -vaapi_device/-hwaccel。
+input_args = []
+# NVENC 示例：
+# output_args = ["-preset", "p4", "-profile:v", "high", "-pix_fmt", "yuv420p"]
+output_args = []
+fallback_to_software = true
+
 [thumbnail]
 cache_dir = "/tmp/river-thumbnails"
 width = 320
