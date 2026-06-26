@@ -71,16 +71,20 @@ type PlaybackConfig struct {
 }
 
 type ProfileConfig struct {
-	Name            string `toml:"name"`
-	Container       string `toml:"container"`
-	VideoCodec      string `toml:"video_codec"`
-	Width           int    `toml:"width"`
-	VideoBitrate    string `toml:"video_bitrate"`
-	AudioCodec      string `toml:"audio_codec"`
-	AudioBitrate    string `toml:"audio_bitrate"`
-	AudioChannels   int    `toml:"audio_channels"`
-	Preset          string `toml:"preset"`
-	SegmentDuration int    `toml:"segment_duration"`
+	Name               string `toml:"name"`
+	Container          string `toml:"container"`
+	VideoCodec         string `toml:"video_codec"`
+	HardwareVideoCodec string `toml:"hardware_video_codec"`
+	VideoProfile       string `toml:"video_profile"`
+	PixelFormat        string `toml:"pixel_format"`
+	VideoTag           string `toml:"video_tag"`
+	Width              int    `toml:"width"`
+	VideoBitrate       string `toml:"video_bitrate"`
+	AudioCodec         string `toml:"audio_codec"`
+	AudioBitrate       string `toml:"audio_bitrate"`
+	AudioChannels      int    `toml:"audio_channels"`
+	Preset             string `toml:"preset"`
+	SegmentDuration    int    `toml:"segment_duration"`
 }
 
 func (c Config) IdleTimeout() time.Duration {
@@ -127,6 +131,8 @@ func Default() Config {
 				Name:            "1080p_8m",
 				Container:       "hls_ts",
 				VideoCodec:      "libx264",
+				VideoProfile:    "high",
+				PixelFormat:     "yuv420p",
 				Width:           1920,
 				VideoBitrate:    "8000k",
 				AudioCodec:      "aac",

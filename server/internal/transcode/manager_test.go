@@ -189,6 +189,67 @@ func TestVAAPIFFmpegArgsUseBackendDefaults(t *testing.T) {
 	}
 }
 
+func TestHEVCSoftwareFFmpegArgsUseFMP4HLS(t *testing.T) {
+	cfg := testConfig(t, "/usr/bin/ffmpeg")
+	profile := hevcProfile()
+
+	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 0, transcodeModeSoftware)
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-c:v libx265",
+		"-profile:v main",
+		"-pix_fmt yuv420p",
+		"-tag:v hvc1",
+		"-hls_segment_type fmp4",
+		"-hls_fmp4_init_filename init.mp4",
+		"-hls_segment_filename /tmp/session/seg_%06d.m4s",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing %q in ffmpeg args: %s", expected, joined)
+		}
+	}
+}
+
+func TestHEVCVAAPIFFmpegArgsUseProfileHardwareCodec(t *testing.T) {
+	cfg := testConfig(t, "/usr/bin/ffmpeg")
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.VideoCodec = "h264_vaapi"
+	cfg.Hardware.Device = "/dev/dri/renderD128"
+	profile := hevcProfile()
+	profile.HardwareVideoCodec = "hevc_vaapi"
+
+	args := buildFFmpegArgs(cfg, profile, "/movie.mkv", "/tmp/session", 0, transcodeModeHardware)
+	joined := strings.Join(args, " ")
+
+	for _, expected := range []string{
+		"-vaapi_device /dev/dri/renderD128",
+		"-hwaccel vaapi",
+		"-vf scale_vaapi=w=1920:h=-2:format=nv12",
+		"-c:v hevc_vaapi",
+		"-profile:v main",
+		"-tag:v hvc1",
+		"-hls_segment_type fmp4",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing %q in ffmpeg args: %s", expected, joined)
+		}
+	}
+}
+
+func TestValidStreamFileAllowsFMP4HLSFiles(t *testing.T) {
+	for _, name := range []string{"init.mp4", "seg_000000.m4s", "seg_123456.m4s"} {
+		if !validStreamFile(name) {
+			t.Fatalf("expected %s to be valid", name)
+		}
+	}
+	for _, name := range []string{"seg_1.m4s", "seg_abcdef.m4s", "../init.mp4"} {
+		if validStreamFile(name) {
+			t.Fatalf("expected %s to be invalid", name)
+		}
+	}
+}
+
 func TestManagerFallsBackToSoftwareWhenHardwareFails(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ffmpeg.log")
 	cfg := testConfig(t, fakeFFmpegWithHardwareFailure(t, logPath))
@@ -213,6 +274,25 @@ func TestManagerFallsBackToSoftwareWhenHardwareFails(t *testing.T) {
 	joined := string(content)
 	if !strings.Contains(joined, "h264_nvenc") || !strings.Contains(joined, "libx264") {
 		t.Fatalf("expected hardware and software ffmpeg attempts, got %s", joined)
+	}
+}
+
+func hevcProfile() config.ProfileConfig {
+	return config.ProfileConfig{
+		Name:               "hevc_1080p_5m",
+		Container:          "hls_fmp4",
+		VideoCodec:         "libx265",
+		HardwareVideoCodec: "hevc_vaapi",
+		VideoProfile:       "main",
+		PixelFormat:        "yuv420p",
+		VideoTag:           "hvc1",
+		Width:              1920,
+		VideoBitrate:       "5000k",
+		AudioCodec:         "aac",
+		AudioBitrate:       "160k",
+		AudioChannels:      2,
+		Preset:             "veryfast",
+		SegmentDuration:    6,
 	}
 }
 

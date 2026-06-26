@@ -34,6 +34,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(name, ".m3u8") {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-cache")
+	} else if strings.HasSuffix(name, ".m4s") || strings.HasSuffix(name, ".mp4") {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Cache-Control", "no-store")
 	} else {
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Cache-Control", "no-store")

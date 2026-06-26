@@ -390,7 +390,7 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 		args = append(args, "-ss", formatStartSeconds(startSeconds))
 	}
 	if mode == transcodeModeHardware {
-		args = append(args, hardwareInputArgs(cfg)...)
+		args = append(args, hardwareInputArgs(cfg, profile)...)
 	}
 	args = append(args,
 		"-i", sourcePath,
@@ -407,49 +407,60 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 	if mode == transcodeModeHardware {
 		args = append(args, cfg.Hardware.OutputArgs...)
 	}
+	if tag := videoTag(cfg, profile, mode); tag != "" {
+		args = append(args, "-tag:v", tag)
+	}
+	args = append(args, audioTranscodeArgs(profile, audioBitrate, audioChannels)...)
 	args = append(args,
-		"-c:a", valueOrDefault(profile.AudioCodec, "aac"),
-		"-b:a", audioBitrate,
-		"-ac", fmt.Sprintf("%d", audioChannels),
 		"-f", "hls",
 		"-hls_time", fmt.Sprintf("%d", segmentDuration),
 		"-hls_list_size", "0",
 		"-hls_flags", "independent_segments",
-		"-hls_segment_filename", filepath.Join(tempDir, "seg_%06d.ts"),
-		filepath.Join(tempDir, "index.m3u8"),
 	)
+	args = append(args, hlsSegmentArgs(profile, tempDir)...)
+	args = append(args, filepath.Join(tempDir, "index.m3u8"))
 	return args
 }
 
 func videoTranscodeArgs(cfg *config.Config, profile config.ProfileConfig, mode transcodeMode, width int, preset string) []string {
 	filter := defaultVideoFilter(width)
 	if mode == transcodeModeHardware {
-		filter = hardwareVideoFilter(cfg, width)
+		codec := hardwareVideoCodec(cfg, profile)
+		filter = hardwareVideoFilter(cfg, profile, width)
 		args := []string{
 			"-vf", filter,
-			"-c:v", cfg.Hardware.VideoCodec,
+			"-c:v", codec,
+		}
+		if videoProfile := videoProfile(profile, codec); videoProfile != "" {
+			args = append(args, "-profile:v", videoProfile)
 		}
 		return args
 	}
 
-	return []string{
+	codec := valueOrDefault(profile.VideoCodec, "libx264")
+	args := []string{
 		"-vf", filter,
-		"-c:v", valueOrDefault(profile.VideoCodec, "libx264"),
+		"-c:v", codec,
 		"-preset", preset,
-		"-profile:v", "high",
-		"-pix_fmt", "yuv420p",
 	}
+	if videoProfile := videoProfile(profile, codec); videoProfile != "" {
+		args = append(args, "-profile:v", videoProfile)
+	}
+	if pixelFormat := pixelFormat(profile, codec); pixelFormat != "" {
+		args = append(args, "-pix_fmt", pixelFormat)
+	}
+	return args
 }
 
 func defaultVideoFilter(width int) string {
 	return fmt.Sprintf("scale='min(%d,iw)':-2", width)
 }
 
-func hardwareInputArgs(cfg *config.Config) []string {
+func hardwareInputArgs(cfg *config.Config, profile config.ProfileConfig) []string {
 	if len(cfg.Hardware.InputArgs) > 0 {
 		return cfg.Hardware.InputArgs
 	}
-	if isVAAPIEncoder(cfg.Hardware.VideoCodec) {
+	if isVAAPIEncoder(hardwareVideoCodec(cfg, profile)) {
 		args := []string{}
 		if cfg.Hardware.Device != "" {
 			args = append(args, "-vaapi_device", cfg.Hardware.Device)
@@ -459,11 +470,11 @@ func hardwareInputArgs(cfg *config.Config) []string {
 	return nil
 }
 
-func hardwareVideoFilter(cfg *config.Config, width int) string {
+func hardwareVideoFilter(cfg *config.Config, profile config.ProfileConfig, width int) string {
 	if cfg.Hardware.VideoFilter != "" {
 		return cfg.Hardware.VideoFilter
 	}
-	if isVAAPIEncoder(cfg.Hardware.VideoCodec) {
+	if isVAAPIEncoder(hardwareVideoCodec(cfg, profile)) {
 		return fmt.Sprintf("scale_vaapi=w=%d:h=-2:format=nv12", width)
 	}
 	return defaultVideoFilter(width)
@@ -471,6 +482,77 @@ func hardwareVideoFilter(cfg *config.Config, width int) string {
 
 func isVAAPIEncoder(codec string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(codec)), "_vaapi")
+}
+
+func hardwareVideoCodec(cfg *config.Config, profile config.ProfileConfig) string {
+	return valueOrDefault(profile.HardwareVideoCodec, cfg.Hardware.VideoCodec)
+}
+
+func videoProfile(profile config.ProfileConfig, codec string) string {
+	if profile.VideoProfile != "" {
+		return profile.VideoProfile
+	}
+	if isHEVCEncoder(codec) {
+		return "main"
+	}
+	if isH264Encoder(codec) {
+		return "high"
+	}
+	return ""
+}
+
+func pixelFormat(profile config.ProfileConfig, codec string) string {
+	if profile.PixelFormat != "" {
+		return profile.PixelFormat
+	}
+	if isH264Encoder(codec) || isHEVCEncoder(codec) {
+		return "yuv420p"
+	}
+	return ""
+}
+
+func videoTag(cfg *config.Config, profile config.ProfileConfig, mode transcodeMode) string {
+	if profile.VideoTag != "" {
+		return profile.VideoTag
+	}
+	codec := profile.VideoCodec
+	if mode == transcodeModeHardware {
+		codec = hardwareVideoCodec(cfg, profile)
+	}
+	if strings.EqualFold(profile.Container, "hls_fmp4") && isHEVCEncoder(codec) {
+		return "hvc1"
+	}
+	return ""
+}
+
+func audioTranscodeArgs(profile config.ProfileConfig, audioBitrate string, audioChannels int) []string {
+	codec := valueOrDefault(profile.AudioCodec, "aac")
+	args := []string{"-c:a", codec}
+	if codec == "copy" {
+		return args
+	}
+	return append(args, "-b:a", audioBitrate, "-ac", fmt.Sprintf("%d", audioChannels))
+}
+
+func hlsSegmentArgs(profile config.ProfileConfig, tempDir string) []string {
+	if strings.EqualFold(profile.Container, "hls_fmp4") {
+		return []string{
+			"-hls_segment_type", "fmp4",
+			"-hls_fmp4_init_filename", "init.mp4",
+			"-hls_segment_filename", filepath.Join(tempDir, "seg_%06d.m4s"),
+		}
+	}
+	return []string{"-hls_segment_filename", filepath.Join(tempDir, "seg_%06d.ts")}
+}
+
+func isH264Encoder(codec string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(codec))
+	return strings.Contains(normalized, "264") || strings.Contains(normalized, "avc")
+}
+
+func isHEVCEncoder(codec string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(codec))
+	return strings.Contains(normalized, "265") || strings.Contains(normalized, "hevc")
 }
 
 func (b *tailBuffer) Write(p []byte) (int, error) {
@@ -499,7 +581,7 @@ func cleanupHLSFiles(tempDir string) error {
 		if name == "master.m3u8" {
 			continue
 		}
-		if name == "index.m3u8" || strings.HasPrefix(name, "seg_") {
+		if name == "index.m3u8" || name == "init.mp4" || strings.HasPrefix(name, "seg_") {
 			if err := os.Remove(filepath.Join(tempDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
@@ -567,13 +649,20 @@ func (m *Manager) waitReady(ctx context.Context, session *StreamSession) error {
 }
 
 func validStreamFile(name string) bool {
-	if name == "master.m3u8" || name == "index.m3u8" {
+	if name == "master.m3u8" || name == "index.m3u8" || name == "init.mp4" {
 		return true
+	}
+	if strings.HasPrefix(name, "seg_") && strings.HasSuffix(name, ".m4s") && len(name) == len("seg_000000.m4s") {
+		return allDigits(name[len("seg_") : len(name)-len(".m4s")])
 	}
 	if !strings.HasPrefix(name, "seg_") || !strings.HasSuffix(name, ".ts") || len(name) != len("seg_000000.ts") {
 		return false
 	}
-	for _, digit := range name[len("seg_") : len(name)-len(".ts")] {
+	return allDigits(name[len("seg_") : len(name)-len(".ts")])
+}
+
+func allDigits(value string) bool {
+	for _, digit := range value {
 		if digit < '0' || digit > '9' {
 			return false
 		}
