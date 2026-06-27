@@ -67,6 +67,91 @@ func TestVideoPlayDirect(t *testing.T) {
 	}
 }
 
+func TestVideoPlaybackOptions(t *testing.T) {
+	root := t.TempDir()
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/playback-options")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
+	}
+	var options []transcode.PlaybackOption
+	if err := json.Unmarshal(response.Body.Bytes(), &options); err != nil {
+		t.Fatal(err)
+	}
+	if len(options) < 2 {
+		t.Fatalf("expected original and transcode options, got %+v", options)
+	}
+	if !options[0].Direct || options[0].Label != "原画" {
+		t.Fatalf("unexpected original option: %+v", options[0])
+	}
+	if options[1].Name != "1080p_8m" || options[1].Codec != "h264" || options[1].Resolution != "1080p" || options[1].Bitrate != "8000k" {
+		t.Fatalf("unexpected transcode option: %+v", options[1])
+	}
+}
+
+func TestVideoPlayOriginalProfile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.mkv&profile=original")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
+	}
+	var body playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != "direct" || body.Profile != "original" || body.URL != "/api/file?path=%2Fmovie.mkv&root=media" {
+		t.Fatalf("unexpected original play response: %+v", body)
+	}
+}
+
+func TestVideoPlayDefaultOriginalProfile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
+	cfg := testConfig(t, root)
+	cfg.Playback.DefaultProfile = "original"
+	fileService, err := filesystem.NewService(cfg.Roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := transcode.NewManager(cfg)
+	t.Cleanup(manager.StopAll)
+	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler()
+
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.mkv")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
+	}
+	var body playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != "direct" || body.Profile != "original" {
+		t.Fatalf("unexpected default original response: %+v", body)
+	}
+}
+
+func TestVideoPlaySelectedTranscodeProfileForcesHLS(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mp4"), []byte("video"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.mp4&profile=1080p_8m")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
+	}
+	var body playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != "hls" || body.Profile != "1080p_8m" || body.SessionID == "" {
+		t.Fatalf("unexpected forced HLS response: %+v", body)
+	}
+}
+
 func TestVideoPlayHLSAndServeStream(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))

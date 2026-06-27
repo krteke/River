@@ -128,3 +128,35 @@ class PlayResponse {
     );
   }
 }
+
+class PlaybackOption {
+  const PlaybackOption({
+    required this.name,
+    required this.label,
+    required this.direct,
+    required this.isDefault,
+    this.codec,
+    this.resolution,
+    this.bitrate,
+  });
+
+  final String name;
+  final String label;
+  final bool direct;
+  final bool isDefault;
+  final String? codec;
+  final String? resolution;
+  final String? bitrate;
+
+  factory PlaybackOption.fromJson(Map<String, dynamic> json) {
+    return PlaybackOption(
+      name: json['name'] as String,
+      label: json['label'] as String? ?? json['name'] as String,
+      direct: json['direct'] as bool? ?? false,
+      isDefault: json['default'] as bool? ?? false,
+      codec: json['codec'] as String?,
+      resolution: json['resolution'] as String?,
+      bitrate: json['bitrate'] as String?,
+    );
+  }
+}

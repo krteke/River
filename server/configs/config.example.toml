@@ -19,20 +19,14 @@ idle_timeout_seconds = 90
 segment_duration_seconds = 6
 
 [hardware_transcode]
-# 可选。除非服务器的 FFmpeg 构建版本和 GPU 驱动支持它，否则保持禁用。
+# 可选。除非服务器的 FFmpeg 构建版本和 GPU 驱动支持硬件编码，否则保持禁用。
 enabled = false
-# 常见示例：h264_nvenc, hevc_nvenc, h264_qsv, hevc_qsv,
-# h264_vaapi, hevc_vaapi, h264_videotoolbox, hevc_videotoolbox。
-video_codec = "h264_nvenc"
-# VAAPI 示例：video_codec = "h264_vaapi" 或 "hevc_vaapi", device = "/dev/dri/renderD128"。
+# auto 会按平台尝试常见后端；也可以固定为 vaapi、nvenc、qsv、videotoolbox。
+backend = "auto"
+# VAAPI 常用设备。非 VAAPI 后端会忽略此项。
 device = "/dev/dri/renderD128"
-# 留空时会根据 video_codec 选择默认 filter；h264_vaapi 会使用 scale_vaapi。
-video_filter = ""
-# 留空时会根据 video_codec 选择默认输入参数；h264_vaapi 会自动添加 -vaapi_device/-hwaccel。
-input_args = []
-# NVENC 示例：
-# output_args = ["-preset", "p4", "-profile:v", "high", "-pix_fmt", "yuv420p"]
-output_args = []
+# speed / balanced / quality。只控制硬件编码器的速度质量倾向，码率仍由 profile 控制。
+quality = "balanced"
 fallback_to_software = true
 
 [thumbnail]
@@ -51,10 +45,13 @@ direct_play_max_height = 1080
 default_profile = "1080p_8m"
 
 [[profiles]]
+name = "original"
+direct = true
+
+[[profiles]]
 name = "1080p_8m"
 container = "hls_ts"
 video_codec = "libx264"
-hardware_video_codec = ""
 video_profile = "high"
 pixel_format = "yuv420p"
 video_tag = ""
@@ -70,7 +67,6 @@ segment_duration = 6
 name = "720p_4m"
 container = "hls_ts"
 video_codec = "libx264"
-hardware_video_codec = ""
 video_profile = "high"
 pixel_format = "yuv420p"
 video_tag = ""
@@ -87,11 +83,9 @@ name = "hevc_1080p_5m"
 # HEVC HLS 建议使用 fMP4 segment，而不是 MPEG-TS。
 container = "hls_fmp4"
 video_codec = "libx265"
-# VAAPI 示例。NVIDIA 可改为 hevc_nvenc；不填则使用 [hardware_transcode].video_codec。
-hardware_video_codec = "hevc_vaapi"
 video_profile = "main"
 pixel_format = "yuv420p"
-video_tag = "hvc1"
+video_tag = ""
 width = 1920
 video_bitrate = "5000k"
 audio_codec = "aac"
@@ -104,10 +98,9 @@ segment_duration = 6
 name = "hevc_720p_3m"
 container = "hls_fmp4"
 video_codec = "libx265"
-hardware_video_codec = "hevc_vaapi"
 video_profile = "main"
 pixel_format = "yuv420p"
-video_tag = "hvc1"
+video_tag = ""
 width = 1280
 video_bitrate = "3000k"
 audio_codec = "aac"

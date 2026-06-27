@@ -61,6 +61,24 @@ void main() {
     expect(response.durationSeconds, 60);
   });
 
+  test('parses playback option', () {
+    final option = PlaybackOption.fromJson({
+      'name': 'hevc_720p_3m',
+      'label': 'hevc / 720p / 3000k',
+      'direct': false,
+      'codec': 'hevc',
+      'resolution': '720p',
+      'bitrate': '3000k',
+      'default': true,
+    });
+
+    expect(option.name, 'hevc_720p_3m');
+    expect(option.codec, 'hevc');
+    expect(option.resolution, '720p');
+    expect(option.bitrate, '3000k');
+    expect(option.isDefault, isTrue);
+  });
+
   test('serializes remembered server password', () {
     const profile = ServerProfile(
       id: 'server',

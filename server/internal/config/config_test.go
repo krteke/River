@@ -16,6 +16,17 @@ func TestValidateRequiresConfiguredDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsDirectProfileWithoutTranscodeSettings(t *testing.T) {
+	cfg := Default()
+	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
+	cfg.Playback.DefaultProfile = "original"
+	cfg.Profiles = []ProfileConfig{{Name: "original", Direct: true}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected direct profile to validate, got %v", err)
+	}
+}
+
 func TestValidateRequiresThumbnailCacheDir(t *testing.T) {
 	cfg := Default()
 	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
@@ -27,14 +38,26 @@ func TestValidateRequiresThumbnailCacheDir(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresHardwareVideoCodecWhenEnabled(t *testing.T) {
+func TestValidateRejectsInvalidHardwareBackend(t *testing.T) {
 	cfg := Default()
 	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
 	cfg.Hardware.Enabled = true
-	cfg.Hardware.VideoCodec = ""
+	cfg.Hardware.Backend = "cuda"
 
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "hardware_transcode.video_codec") {
-		t.Fatalf("expected hardware video codec validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "hardware_transcode.backend") {
+		t.Fatalf("expected hardware backend validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidHardwareQuality(t *testing.T) {
+	cfg := Default()
+	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
+	cfg.Hardware.Enabled = true
+	cfg.Hardware.Quality = "lossless"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "hardware_transcode.quality") {
+		t.Fatalf("expected hardware quality validation error, got %v", err)
 	}
 }

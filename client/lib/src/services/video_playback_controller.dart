@@ -53,6 +53,8 @@ class VideoPlaybackController extends ChangeNotifier {
   double playbackRate = 1;
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
+  List<PlaybackOption> playbackOptions = const [];
+  PlaybackOption? selectedPlaybackOption;
   bool _disposed = false;
   Duration _hlsBaseOffset = Duration.zero;
 
@@ -64,7 +66,13 @@ class VideoPlaybackController extends ChangeNotifier {
     loading = true;
     notifyListeners();
     try {
-      final response = await api.playVideo(root, path);
+      playbackOptions = await api.getPlaybackOptions();
+      selectedPlaybackOption = _initialPlaybackOption(playbackOptions);
+      final response = await api.playVideo(
+        root,
+        path,
+        profile: selectedPlaybackOption?.name,
+      );
       if (_disposed) {
         if (response.sessionId case final sessionId?) {
           await api.stopSession(sessionId);
@@ -95,6 +103,46 @@ class VideoPlaybackController extends ChangeNotifier {
     await _playbackEngine.setRate(rate);
   }
 
+  Future<void> selectPlaybackOption(PlaybackOption option) async {
+    if (selectedPlaybackOption?.name == option.name || seeking) {
+      return;
+    }
+    final previousResponse = playResponse;
+    final previousSessionId = previousResponse?.sessionId;
+    selectedPlaybackOption = option;
+    seeking = true;
+    errorMessage = null;
+    notifyListeners();
+    try {
+      final next = await api.playVideo(
+        root,
+        path,
+        startSeconds: position.inMilliseconds / 1000,
+        profile: option.name,
+        replaceSessionId: previousSessionId,
+      );
+      if (_disposed) {
+        if (next.sessionId case final sessionId?) {
+          await api.stopSession(sessionId);
+        }
+        return;
+      }
+      await _openResponse(next);
+      final nextSessionId = next.sessionId;
+      if (previousSessionId != null && nextSessionId != previousSessionId) {
+        await api.stopSession(previousSessionId);
+      }
+    } catch (error) {
+      selectedPlaybackOption = _optionForResponse(previousResponse);
+      errorMessage = error is RiverApiException ? error.message : '切换播放参数失败';
+    } finally {
+      seeking = false;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
   Future<void> seekRelative(Duration offset) {
     return seekTo(position + offset);
   }
@@ -121,6 +169,7 @@ class VideoPlaybackController extends ChangeNotifier {
         root,
         path,
         startSeconds: clamped.inMilliseconds / 1000,
+        profile: selectedPlaybackOption?.name,
         replaceSessionId: response.sessionId,
       );
       if (_disposed) {
@@ -157,6 +206,7 @@ class VideoPlaybackController extends ChangeNotifier {
 
   Future<void> _openResponse(PlayResponse response) async {
     playResponse = response;
+    selectedPlaybackOption = _optionForResponse(response);
     _hlsBaseOffset = response.isHls
         ? _durationFromSeconds(response.startSeconds)
         : Duration.zero;
@@ -172,6 +222,39 @@ class VideoPlaybackController extends ChangeNotifier {
     if (playbackRate != 1) {
       await _playbackEngine.setRate(playbackRate);
     }
+  }
+
+  PlaybackOption? _initialPlaybackOption(List<PlaybackOption> options) {
+    if (options.isEmpty) {
+      return null;
+    }
+    for (final option in options) {
+      if (option.isDefault) {
+        return option;
+      }
+    }
+    return options.first;
+  }
+
+  PlaybackOption? _optionForResponse(PlayResponse? response) {
+    if (response == null || playbackOptions.isEmpty) {
+      return selectedPlaybackOption;
+    }
+    if (response.profile case final profile?) {
+      for (final option in playbackOptions) {
+        if (option.name == profile) {
+          return option;
+        }
+      }
+    }
+    if (!response.isHls) {
+      for (final option in playbackOptions) {
+        if (option.direct) {
+          return option;
+        }
+      }
+    }
+    return selectedPlaybackOption;
   }
 
   Media _mediaFor(PlayResponse response) {

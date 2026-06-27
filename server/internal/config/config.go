@@ -44,13 +44,11 @@ type TranscodeConfig struct {
 }
 
 type HardwareConfig struct {
-	Enabled            bool     `toml:"enabled"`
-	VideoCodec         string   `toml:"video_codec"`
-	Device             string   `toml:"device"`
-	VideoFilter        string   `toml:"video_filter"`
-	InputArgs          []string `toml:"input_args"`
-	OutputArgs         []string `toml:"output_args"`
-	FallbackToSoftware bool     `toml:"fallback_to_software"`
+	Enabled            bool   `toml:"enabled"`
+	Backend            string `toml:"backend"`
+	Device             string `toml:"device"`
+	Quality            string `toml:"quality"`
+	FallbackToSoftware bool   `toml:"fallback_to_software"`
 }
 
 type ThumbnailConfig struct {
@@ -71,20 +69,20 @@ type PlaybackConfig struct {
 }
 
 type ProfileConfig struct {
-	Name               string `toml:"name"`
-	Container          string `toml:"container"`
-	VideoCodec         string `toml:"video_codec"`
-	HardwareVideoCodec string `toml:"hardware_video_codec"`
-	VideoProfile       string `toml:"video_profile"`
-	PixelFormat        string `toml:"pixel_format"`
-	VideoTag           string `toml:"video_tag"`
-	Width              int    `toml:"width"`
-	VideoBitrate       string `toml:"video_bitrate"`
-	AudioCodec         string `toml:"audio_codec"`
-	AudioBitrate       string `toml:"audio_bitrate"`
-	AudioChannels      int    `toml:"audio_channels"`
-	Preset             string `toml:"preset"`
-	SegmentDuration    int    `toml:"segment_duration"`
+	Name            string `toml:"name"`
+	Direct          bool   `toml:"direct"`
+	Container       string `toml:"container"`
+	VideoCodec      string `toml:"video_codec"`
+	VideoProfile    string `toml:"video_profile"`
+	PixelFormat     string `toml:"pixel_format"`
+	VideoTag        string `toml:"video_tag"`
+	Width           int    `toml:"width"`
+	VideoBitrate    string `toml:"video_bitrate"`
+	AudioCodec      string `toml:"audio_codec"`
+	AudioBitrate    string `toml:"audio_bitrate"`
+	AudioChannels   int    `toml:"audio_channels"`
+	Preset          string `toml:"preset"`
+	SegmentDuration int    `toml:"segment_duration"`
 }
 
 func (c Config) IdleTimeout() time.Duration {
@@ -107,8 +105,9 @@ func Default() Config {
 			SegmentDurationSeconds: 6,
 		},
 		Hardware: HardwareConfig{
-			VideoCodec:         "h264_nvenc",
+			Backend:            "auto",
 			Device:             "/dev/dri/renderD128",
+			Quality:            "balanced",
 			FallbackToSoftware: true,
 		},
 		Thumbnail: ThumbnailConfig{
@@ -127,6 +126,10 @@ func Default() Config {
 			DefaultProfile:       "1080p_8m",
 		},
 		Profiles: []ProfileConfig{
+			{
+				Name:   "original",
+				Direct: true,
+			},
 			{
 				Name:            "1080p_8m",
 				Container:       "hls_ts",
@@ -186,8 +189,17 @@ func (c Config) Validate() error {
 	if c.Transcode.SegmentDurationSeconds <= 0 {
 		return errors.New("transcode.segment_duration_seconds must be greater than 0")
 	}
-	if c.Hardware.Enabled && c.Hardware.VideoCodec == "" {
-		return errors.New("hardware_transcode.video_codec is required when hardware transcoding is enabled")
+	if c.Hardware.Enabled {
+		switch c.Hardware.Backend {
+		case "", "auto", "vaapi", "nvenc", "qsv", "videotoolbox":
+		default:
+			return errors.New("hardware_transcode.backend must be auto, vaapi, nvenc, qsv, or videotoolbox")
+		}
+		switch c.Hardware.Quality {
+		case "", "speed", "balanced", "quality":
+		default:
+			return errors.New("hardware_transcode.quality must be speed, balanced, or quality")
+		}
 	}
 	if c.Thumbnail.CacheDir == "" {
 		return errors.New("thumbnail.cache_dir is required")
@@ -247,6 +259,10 @@ func (c Config) Validate() error {
 		}
 		if _, ok := profiles[profile.Name]; ok {
 			return errors.New("duplicate profile name: " + profile.Name)
+		}
+		if profile.Direct {
+			profiles[profile.Name] = struct{}{}
+			continue
 		}
 		if profile.Container == "" {
 			return errors.New("profile.container is required")

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,11 +24,15 @@ var (
 	ErrQueueFull          = errors.New("transcode queue full")
 	ErrSessionNotFound    = errors.New("stream session not found")
 	ErrProfileNotFound    = errors.New("profile not found")
+	ErrDirectProfile      = errors.New("direct profile cannot be transcoded")
 	ErrInvalidStreamFile  = errors.New("invalid stream file")
 	ErrFFmpegNotAvailable = errors.New("ffmpeg not available")
 )
 
-const transcodeReadyTimeout = 15 * time.Second
+const (
+	transcodeReadyTimeout      = 15 * time.Second
+	transcodeValidationTimeout = 5 * time.Second
+)
 
 type transcodeMode string
 
@@ -35,6 +40,21 @@ const (
 	transcodeModeSoftware transcodeMode = "software"
 	transcodeModeHardware transcodeMode = "hardware"
 )
+
+type hardwareBackend string
+
+const (
+	hardwareBackendAuto         hardwareBackend = "auto"
+	hardwareBackendVAAPI        hardwareBackend = "vaapi"
+	hardwareBackendNVENC        hardwareBackend = "nvenc"
+	hardwareBackendQSV          hardwareBackend = "qsv"
+	hardwareBackendVideoToolbox hardwareBackend = "videotoolbox"
+)
+
+type transcodeAttempt struct {
+	mode    transcodeMode
+	backend hardwareBackend
+}
 
 type StartOptions struct {
 	RootID           string
@@ -58,10 +78,21 @@ type StreamSession struct {
 
 	sourcePath string
 	mode       transcodeMode
+	backend    hardwareBackend
 	cmd        *exec.Cmd
 	cancel     context.CancelFunc
 	stderr     *tailBuffer
 	done       chan struct{}
+}
+
+type PlaybackOption struct {
+	Name       string `json:"name"`
+	Label      string `json:"label"`
+	Direct     bool   `json:"direct"`
+	Codec      string `json:"codec,omitempty"`
+	Resolution string `json:"resolution,omitempty"`
+	Bitrate    string `json:"bitrate,omitempty"`
+	Default    bool   `json:"default"`
 }
 
 type tailBuffer struct {
@@ -90,6 +121,22 @@ func NewManager(cfg *config.Config) *Manager {
 	}
 }
 
+func (m *Manager) Profile(name string) (config.ProfileConfig, bool) {
+	if name == "" {
+		name = m.cfg.Playback.DefaultProfile
+	}
+	profile, ok := m.profiles[name]
+	return profile, ok
+}
+
+func (m *Manager) PlaybackOptions() []PlaybackOption {
+	options := make([]PlaybackOption, 0, len(m.cfg.Profiles))
+	for _, profile := range m.cfg.Profiles {
+		options = append(options, playbackOption(profile, m.cfg.Playback.DefaultProfile))
+	}
+	return options
+}
+
 func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSession, error) {
 	if options.ReplaceSessionID != "" {
 		m.Stop(options.ReplaceSessionID)
@@ -101,6 +148,9 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 	profile, ok := m.profiles[options.ProfileName]
 	if !ok {
 		return nil, ErrProfileNotFound
+	}
+	if profile.Direct {
+		return nil, ErrDirectProfile
 	}
 
 	sessionID := newSessionID()
@@ -138,24 +188,33 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
 
-	modes := m.transcodeModes()
+	attempts := m.transcodeAttempts()
 	var lastErr error
-	for i, mode := range modes {
+	for i, attempt := range attempts {
 		if i > 0 {
 			m.prepareFallback(session)
 		}
-		if err := m.startProcess(session, mode, buildFFmpegArgs(m.cfg, profile, options.SourcePath, tempDir, options.StartSeconds, mode)); err != nil {
+		if err := m.startProcess(session, attempt, buildFFmpegArgsForAttempt(m.cfg, profile, options.SourcePath, tempDir, options.StartSeconds, attempt)); err != nil {
 			lastErr = err
 		} else if err := m.waitReady(ctx, session); err != nil {
 			lastErr = err
 			m.stopProcess(session)
+		} else if attempt.mode == transcodeModeHardware {
+			if err := m.validateHardwareOutput(ctx, session); err != nil {
+				lastErr = err
+				m.stopProcess(session)
+			} else {
+				slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds, "mode", attempt.mode, "hardware_backend", attempt.backend)
+				return session, nil
+			}
 		} else {
-			slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds, "mode", mode)
+			slog.InfoContext(ctx, "start transcode", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "start_seconds", options.StartSeconds, "mode", attempt.mode, "hardware_backend", attempt.backend)
 			return session, nil
 		}
 
-		if mode == transcodeModeHardware && i+1 < len(modes) {
-			slog.WarnContext(ctx, "hardware transcode failed, falling back to software", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "error", lastErr)
+		if attempt.mode == transcodeModeHardware && i+1 < len(attempts) {
+			next := attempts[i+1]
+			slog.WarnContext(ctx, "hardware transcode failed, trying next transcode backend", "session_id", session.ID, "source", options.SourcePath, "profile", profile.Name, "hardware_backend", attempt.backend, "next_mode", next.mode, "next_hardware_backend", next.backend, "error", lastErr)
 			continue
 		}
 		m.Stop(session.ID)
@@ -166,17 +225,21 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*StreamSessi
 	return nil, lastErr
 }
 
-func (m *Manager) transcodeModes() []transcodeMode {
+func (m *Manager) transcodeAttempts() []transcodeAttempt {
 	if !m.cfg.Hardware.Enabled {
-		return []transcodeMode{transcodeModeSoftware}
+		return []transcodeAttempt{{mode: transcodeModeSoftware}}
+	}
+	attempts := make([]transcodeAttempt, 0, 4)
+	for _, backend := range hardwareBackends(m.cfg.Hardware.Backend) {
+		attempts = append(attempts, transcodeAttempt{mode: transcodeModeHardware, backend: backend})
 	}
 	if m.cfg.Hardware.FallbackToSoftware {
-		return []transcodeMode{transcodeModeHardware, transcodeModeSoftware}
+		attempts = append(attempts, transcodeAttempt{mode: transcodeModeSoftware})
 	}
-	return []transcodeMode{transcodeModeHardware}
+	return attempts
 }
 
-func (m *Manager) startProcess(session *StreamSession, mode transcodeMode, args []string) error {
+func (m *Manager) startProcess(session *StreamSession, attempt transcodeAttempt, args []string) error {
 	// FFmpeg 不能绑定到 HTTP 请求的 context，否则客户端拿到播放地址后请求结束会中断转码。
 	processCtx, cancel := context.WithCancel(context.Background())
 	stderr := newTailBuffer(64 * 1024)
@@ -185,7 +248,8 @@ func (m *Manager) startProcess(session *StreamSession, mode transcodeMode, args 
 	cmd.Stderr = stderr
 
 	m.mu.Lock()
-	session.mode = mode
+	session.mode = attempt.mode
+	session.backend = attempt.backend
 	session.cancel = cancel
 	session.stderr = stderr
 	session.done = done
@@ -205,7 +269,7 @@ func (m *Manager) startProcess(session *StreamSession, mode transcodeMode, args 
 	session.Status = "running"
 	m.mu.Unlock()
 
-	go m.wait(session, cmd, stderr, done, mode)
+	go m.wait(session, cmd, stderr, done, attempt)
 	return nil
 }
 
@@ -358,6 +422,13 @@ func writeMasterPlaylist(path string, profile config.ProfileConfig) error {
 }
 
 func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePath, tempDir string, startSeconds float64, mode transcodeMode) []string {
+	return buildFFmpegArgsForAttempt(cfg, profile, sourcePath, tempDir, startSeconds, transcodeAttempt{
+		mode:    mode,
+		backend: firstHardwareBackend(cfg.Hardware.Backend),
+	})
+}
+
+func buildFFmpegArgsForAttempt(cfg *config.Config, profile config.ProfileConfig, sourcePath, tempDir string, startSeconds float64, attempt transcodeAttempt) []string {
 	segmentDuration := profile.SegmentDuration
 	if segmentDuration <= 0 {
 		segmentDuration = cfg.Transcode.SegmentDurationSeconds
@@ -389,25 +460,22 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 	if startSeconds > 0 {
 		args = append(args, "-ss", formatStartSeconds(startSeconds))
 	}
-	if mode == transcodeModeHardware {
-		args = append(args, hardwareInputArgs(cfg, profile)...)
+	if attempt.mode == transcodeModeHardware {
+		args = append(args, hardwareInputArgs(cfg, attempt.backend)...)
 	}
 	args = append(args,
 		"-i", sourcePath,
 		"-map", "0:v:0?",
 		"-map", "0:a:0?",
 	)
-	args = append(args, videoTranscodeArgs(cfg, profile, mode, width, preset)...)
+	args = append(args, videoTranscodeArgs(cfg, profile, attempt, width, preset)...)
 	args = append(args,
 		"-b:v", videoBitrate,
 		"-maxrate", videoBitrate,
 		"-bufsize", bitrateBufSize(videoBitrate),
 		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", segmentDuration),
 	)
-	if mode == transcodeModeHardware {
-		args = append(args, cfg.Hardware.OutputArgs...)
-	}
-	if tag := videoTag(cfg, profile, mode); tag != "" {
+	if tag := videoTag(profile); tag != "" {
 		args = append(args, "-tag:v", tag)
 	}
 	args = append(args, audioTranscodeArgs(profile, audioBitrate, audioChannels)...)
@@ -422,11 +490,11 @@ func buildFFmpegArgs(cfg *config.Config, profile config.ProfileConfig, sourcePat
 	return args
 }
 
-func videoTranscodeArgs(cfg *config.Config, profile config.ProfileConfig, mode transcodeMode, width int, preset string) []string {
+func videoTranscodeArgs(cfg *config.Config, profile config.ProfileConfig, attempt transcodeAttempt, width int, preset string) []string {
 	filter := defaultVideoFilter(width)
-	if mode == transcodeModeHardware {
-		codec := hardwareVideoCodec(cfg, profile)
-		filter = hardwareVideoFilter(cfg, profile, width)
+	if attempt.mode == transcodeModeHardware {
+		codec := hardwareVideoCodec(profile, attempt.backend)
+		filter = hardwareVideoFilter(attempt.backend, width)
 		args := []string{
 			"-vf", filter,
 			"-c:v", codec,
@@ -434,7 +502,12 @@ func videoTranscodeArgs(cfg *config.Config, profile config.ProfileConfig, mode t
 		if videoProfile := videoProfile(profile, codec); videoProfile != "" {
 			args = append(args, "-profile:v", videoProfile)
 		}
-		return args
+		if attempt.backend != hardwareBackendVAAPI {
+			if pixelFormat := pixelFormat(profile, codec); pixelFormat != "" {
+				args = append(args, "-pix_fmt", pixelFormat)
+			}
+		}
+		return append(args, hardwareQualityArgs(profile, attempt.backend, cfg.Hardware.Quality)...)
 	}
 
 	codec := valueOrDefault(profile.VideoCodec, "libx264")
@@ -456,11 +529,8 @@ func defaultVideoFilter(width int) string {
 	return fmt.Sprintf("scale='min(%d,iw)':-2", width)
 }
 
-func hardwareInputArgs(cfg *config.Config, profile config.ProfileConfig) []string {
-	if len(cfg.Hardware.InputArgs) > 0 {
-		return cfg.Hardware.InputArgs
-	}
-	if isVAAPIEncoder(hardwareVideoCodec(cfg, profile)) {
+func hardwareInputArgs(cfg *config.Config, backend hardwareBackend) []string {
+	if backend == hardwareBackendVAAPI {
 		args := []string{}
 		if cfg.Hardware.Device != "" {
 			args = append(args, "-vaapi_device", cfg.Hardware.Device)
@@ -470,22 +540,30 @@ func hardwareInputArgs(cfg *config.Config, profile config.ProfileConfig) []strin
 	return nil
 }
 
-func hardwareVideoFilter(cfg *config.Config, profile config.ProfileConfig, width int) string {
-	if cfg.Hardware.VideoFilter != "" {
-		return cfg.Hardware.VideoFilter
-	}
-	if isVAAPIEncoder(hardwareVideoCodec(cfg, profile)) {
+func hardwareVideoFilter(backend hardwareBackend, width int) string {
+	if backend == hardwareBackendVAAPI {
 		return fmt.Sprintf("scale_vaapi=w=%d:h=-2:format=nv12", width)
 	}
 	return defaultVideoFilter(width)
 }
 
-func isVAAPIEncoder(codec string) bool {
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(codec)), "_vaapi")
-}
-
-func hardwareVideoCodec(cfg *config.Config, profile config.ProfileConfig) string {
-	return valueOrDefault(profile.HardwareVideoCodec, cfg.Hardware.VideoCodec)
+func hardwareVideoCodec(profile config.ProfileConfig, backend hardwareBackend) string {
+	family := codecFamily(profile.VideoCodec)
+	if family != "hevc" {
+		family = "h264"
+	}
+	switch backend {
+	case hardwareBackendVAAPI:
+		return family + "_vaapi"
+	case hardwareBackendNVENC:
+		return family + "_nvenc"
+	case hardwareBackendQSV:
+		return family + "_qsv"
+	case hardwareBackendVideoToolbox:
+		return family + "_videotoolbox"
+	default:
+		return family + "_vaapi"
+	}
 }
 
 func videoProfile(profile config.ProfileConfig, codec string) string {
@@ -511,18 +589,71 @@ func pixelFormat(profile config.ProfileConfig, codec string) string {
 	return ""
 }
 
-func videoTag(cfg *config.Config, profile config.ProfileConfig, mode transcodeMode) string {
-	if profile.VideoTag != "" {
-		return profile.VideoTag
+func videoTag(profile config.ProfileConfig) string {
+	return profile.VideoTag
+}
+
+func hardwareBackends(value string) []hardwareBackend {
+	switch hardwareBackend(strings.ToLower(strings.TrimSpace(value))) {
+	case hardwareBackendVAAPI:
+		return []hardwareBackend{hardwareBackendVAAPI}
+	case hardwareBackendNVENC:
+		return []hardwareBackend{hardwareBackendNVENC}
+	case hardwareBackendQSV:
+		return []hardwareBackend{hardwareBackendQSV}
+	case hardwareBackendVideoToolbox:
+		return []hardwareBackend{hardwareBackendVideoToolbox}
+	default:
+		if runtime.GOOS == "darwin" {
+			return []hardwareBackend{hardwareBackendVideoToolbox}
+		}
+		return []hardwareBackend{hardwareBackendVAAPI, hardwareBackendNVENC, hardwareBackendQSV}
 	}
-	codec := profile.VideoCodec
-	if mode == transcodeModeHardware {
-		codec = hardwareVideoCodec(cfg, profile)
+}
+
+func firstHardwareBackend(value string) hardwareBackend {
+	backends := hardwareBackends(value)
+	if len(backends) == 0 {
+		return hardwareBackendVAAPI
 	}
-	if strings.EqualFold(profile.Container, "hls_fmp4") && isHEVCEncoder(codec) {
-		return "hvc1"
+	return backends[0]
+}
+
+func hardwareQualityArgs(profile config.ProfileConfig, backend hardwareBackend, quality string) []string {
+	switch backend {
+	case hardwareBackendVAAPI:
+		if codecFamily(profile.VideoCodec) == "hevc" {
+			return []string{"-rc_mode", "VBR", "-bf", "0", "-idr_interval", "1"}
+		}
+		switch quality {
+		case "speed":
+			return []string{"-quality", "7"}
+		case "quality":
+			return []string{"-quality", "1"}
+		default:
+			return []string{"-quality", "4"}
+		}
+	case hardwareBackendNVENC:
+		switch quality {
+		case "speed":
+			return []string{"-preset", "p1"}
+		case "quality":
+			return []string{"-preset", "p7"}
+		default:
+			return []string{"-preset", "p4"}
+		}
+	case hardwareBackendQSV:
+		switch quality {
+		case "speed":
+			return []string{"-preset", "veryfast"}
+		case "quality":
+			return []string{"-preset", "slower"}
+		default:
+			return []string{"-preset", "medium"}
+		}
+	default:
+		return nil
 	}
-	return ""
 }
 
 func audioTranscodeArgs(profile config.ProfileConfig, audioBitrate string, audioChannels int) []string {
@@ -553,6 +684,68 @@ func isH264Encoder(codec string) bool {
 func isHEVCEncoder(codec string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(codec))
 	return strings.Contains(normalized, "265") || strings.Contains(normalized, "hevc")
+}
+
+func playbackOption(profile config.ProfileConfig, defaultProfile string) PlaybackOption {
+	if profile.Direct {
+		return PlaybackOption{
+			Name:    profile.Name,
+			Label:   "原画",
+			Direct:  true,
+			Default: profile.Name == defaultProfile,
+		}
+	}
+
+	codec := codecFamily(profile.VideoCodec)
+	resolution := resolutionLabel(profile.Width)
+	bitrate := profile.VideoBitrate
+	labelParts := []string{}
+	if codec != "" {
+		labelParts = append(labelParts, codec)
+	}
+	if resolution != "" {
+		labelParts = append(labelParts, resolution)
+	}
+	if bitrate != "" {
+		labelParts = append(labelParts, bitrate)
+	}
+	label := profile.Name
+	if len(labelParts) > 0 {
+		label = strings.Join(labelParts, " / ")
+	}
+
+	return PlaybackOption{
+		Name:       profile.Name,
+		Label:      label,
+		Direct:     false,
+		Codec:      codec,
+		Resolution: resolution,
+		Bitrate:    bitrate,
+		Default:    profile.Name == defaultProfile,
+	}
+}
+
+func codecFamily(codec string) string {
+	if isHEVCEncoder(codec) {
+		return "hevc"
+	}
+	if isH264Encoder(codec) {
+		return "h264"
+	}
+	return strings.TrimSpace(codec)
+}
+
+func resolutionLabel(width int) string {
+	switch {
+	case width >= 1920:
+		return "1080p"
+	case width >= 1280:
+		return "720p"
+	case width > 0:
+		return fmt.Sprintf("%dp", width)
+	default:
+		return ""
+	}
 }
 
 func (b *tailBuffer) Write(p []byte) (int, error) {
@@ -590,7 +783,7 @@ func cleanupHLSFiles(tempDir string) error {
 	return nil
 }
 
-func (m *Manager) wait(session *StreamSession, cmd *exec.Cmd, stderr *tailBuffer, done chan struct{}, mode transcodeMode) {
+func (m *Manager) wait(session *StreamSession, cmd *exec.Cmd, stderr *tailBuffer, done chan struct{}, attempt transcodeAttempt) {
 	defer close(done)
 	err := cmd.Wait()
 	m.mu.Lock()
@@ -610,7 +803,8 @@ func (m *Manager) wait(session *StreamSession, cmd *exec.Cmd, stderr *tailBuffer
 				"session_id", session.ID,
 				"source", session.sourcePath,
 				"profile", session.ProfileName,
-				"mode", mode,
+				"mode", attempt.mode,
+				"hardware_backend", attempt.backend,
 				"exit_code", exitCode,
 				"error", err,
 				"stderr", stderr.String(),
@@ -646,6 +840,49 @@ func (m *Manager) waitReady(ctx context.Context, session *StreamSession) error {
 			}
 		}
 	}
+}
+
+func (m *Manager) validateHardwareOutput(ctx context.Context, session *StreamSession) error {
+	validationCtx, cancel := context.WithTimeout(ctx, transcodeValidationTimeout)
+	defer cancel()
+
+	stderr := newTailBuffer(32 * 1024)
+	cmd := exec.CommandContext(
+		validationCtx,
+		m.cfg.FFmpeg.FFmpegPath,
+		"-hide_banner",
+		"-v", "warning",
+		"-i", filepath.Join(session.TempDir, "index.m3u8"),
+		"-frames:v", "30",
+		"-f", "null",
+		"-",
+	)
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("hardware output validation failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if warning := corruptVideoWarning(stderr.String()); warning != "" {
+		return errors.New("hardware output validation failed: " + warning)
+	}
+	return nil
+}
+
+func corruptVideoWarning(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if isCorruptVideoWarning(line) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+func isCorruptVideoWarning(line string) bool {
+	line = strings.ToLower(line)
+	return strings.Contains(line, "skipping invalid undecodable nalu") ||
+		strings.Contains(line, "outside the valid range") ||
+		strings.Contains(line, "invalid nalu") ||
+		strings.Contains(line, "error while decoding") ||
+		strings.Contains(line, "decode_slice_header error")
 }
 
 func validStreamFile(name string) bool {

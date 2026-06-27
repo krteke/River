@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/thumbnail", s.thumbnailHandler)
 	mux.HandleFunc("GET /api/download", s.downloadHandler)
 	mux.HandleFunc("GET /api/video/info", s.videoInfoHandler)
+	mux.HandleFunc("GET /api/video/playback-options", s.videoPlaybackOptionsHandler)
 	mux.HandleFunc("GET /api/video/play", s.videoPlayHandler)
 	mux.HandleFunc("DELETE /api/video/session/{session}", s.videoStopHandler)
 	mux.Handle("GET /stream/{session}/{file}", s.streamService)
@@ -222,6 +223,10 @@ func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, info)
 }
 
+func (s *Server) videoPlaybackOptionsHandler(w http.ResponseWriter, r *http.Request) {
+	writeJson(w, http.StatusOK, s.transcodeManager.PlaybackOptions())
+}
+
 func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 	root, path, err := parseQuery(r, true)
 	if err != nil {
@@ -241,17 +246,28 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	startSeconds = clampStartSeconds(startSeconds, info.Container.Duration)
 
+	profileName := strings.TrimSpace(r.URL.Query().Get("profile"))
+	var selectedProfileName string
+	if profileName != "" {
+		profile, ok := s.transcodeManager.Profile(profileName)
+		if !ok {
+			writeError(w, transcode.ErrProfileNotFound)
+			return
+		}
+		selectedProfileName = profile.Name
+		if profile.Direct {
+			s.writeDirectPlay(w, root, path, resolved, info, startSeconds, profile.Name)
+			return
+		}
+	} else if profile, ok := s.transcodeManager.Profile(""); ok && profile.Direct {
+		s.writeDirectPlay(w, root, path, resolved, info, startSeconds, profile.Name)
+		return
+	}
+
 	playback := s.mediaService.PlaybackInfo(info)
 
-	if playback.Mode == media.PlaybackModeDirect {
-		slog.Info("play direct", "root", root, "path", path)
-		writeJson(w, http.StatusOK, playResponse{
-			Mode:            "direct",
-			URL:             fileURL(root, resolved.RelPath),
-			Mime:            filesystem.ContentType(resolved.AbsPath),
-			StartSeconds:    startSeconds,
-			DurationSeconds: info.Container.Duration,
-		})
+	if profileName == "" && playback.Mode == media.PlaybackModeDirect {
+		s.writeDirectPlay(w, root, path, resolved, info, startSeconds, "")
 		return
 	}
 	if playback.Mode == media.PlaybackModeUnsupported {
@@ -263,7 +279,7 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 		RootID:           root,
 		RelPath:          resolved.RelPath,
 		SourcePath:       resolved.AbsPath,
-		ProfileName:      r.URL.Query().Get("profile"),
+		ProfileName:      selectedProfileName,
 		StartSeconds:     startSeconds,
 		ReplaceSessionID: strings.TrimSpace(r.URL.Query().Get("replace_session_id")),
 	})
@@ -278,6 +294,18 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 		URL:             "/stream/" + session.ID + "/master.m3u8",
 		Profile:         session.ProfileName,
 		StartSeconds:    session.StartSeconds,
+		DurationSeconds: info.Container.Duration,
+	})
+}
+
+func (s *Server) writeDirectPlay(w http.ResponseWriter, root, path string, resolved *filesystem.ResolvedPath, info *media.MediaInfo, startSeconds float64, profileName string) {
+	slog.Info("play direct", "root", root, "path", path, "profile", profileName)
+	writeJson(w, http.StatusOK, playResponse{
+		Mode:            "direct",
+		URL:             fileURL(root, resolved.RelPath),
+		Mime:            filesystem.ContentType(resolved.AbsPath),
+		Profile:         profileName,
+		StartSeconds:    startSeconds,
 		DurationSeconds: info.Container.Duration,
 	})
 }

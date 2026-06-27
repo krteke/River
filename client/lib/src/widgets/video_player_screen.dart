@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../models/file_models.dart';
 import '../services/river_api.dart';
 import '../services/video_playback_controller.dart';
 
@@ -449,6 +450,11 @@ class _ControlPanel extends StatelessWidget {
                   const SizedBox(width: 4),
                   Text('/ ${_formatDuration(controller.duration)}'),
                   const Spacer(),
+                  _PlaybackOptionButton(
+                    controller: controller,
+                    onSelected: onShowControls,
+                  ),
+                  const SizedBox(width: 8),
                   _SpeedMenu(
                     controller: controller,
                     onSelected: onShowControls,
@@ -537,6 +543,251 @@ class _ControlPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _PlaybackOptionButton extends StatelessWidget {
+  const _PlaybackOptionButton({
+    required this.controller,
+    required this.onSelected,
+  });
+
+  final VideoPlaybackController controller;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = controller.selectedPlaybackOption;
+    return TextButton.icon(
+      style: TextButton.styleFrom(foregroundColor: Colors.white),
+      onPressed: controller.seeking || controller.playbackOptions.isEmpty
+          ? null
+          : () {
+              onSelected();
+              showModalBottomSheet<void>(
+                context: context,
+                showDragHandle: true,
+                builder: (context) => _PlaybackOptionSheet(
+                  controller: controller,
+                  onSelected: onSelected,
+                ),
+              );
+            },
+      icon: const Icon(Icons.tune_rounded),
+      label: Text(selected?.label ?? '画质'),
+    );
+  }
+}
+
+class _PlaybackOptionSheet extends StatefulWidget {
+  const _PlaybackOptionSheet({
+    required this.controller,
+    required this.onSelected,
+  });
+
+  final VideoPlaybackController controller;
+  final VoidCallback onSelected;
+
+  @override
+  State<_PlaybackOptionSheet> createState() => _PlaybackOptionSheetState();
+}
+
+class _PlaybackOptionSheetState extends State<_PlaybackOptionSheet> {
+  static const _originalResolution = '原画';
+
+  late String _resolution;
+  String? _codec;
+  String? _bitrate;
+
+  List<PlaybackOption> get _options => widget.controller.playbackOptions;
+
+  @override
+  void initState() {
+    super.initState();
+    final selected =
+        widget.controller.selectedPlaybackOption ??
+        _firstDefaultOption() ??
+        _options.first;
+    _resolution = _resolutionOf(selected);
+    _codec = selected.codec;
+    _bitrate = selected.bitrate;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = _selectedOption();
+    final isOriginal = _resolution == _originalResolution;
+    final codecs = _uniqueStrings(
+      _options
+          .where(
+            (option) => !option.direct && _resolutionOf(option) == _resolution,
+          )
+          .map((option) => option.codec),
+    );
+    final bitrates = _uniqueStrings(
+      _options
+          .where(
+            (option) =>
+                !option.direct &&
+                _resolutionOf(option) == _resolution &&
+                option.codec == _codec,
+          )
+          .map((option) => option.bitrate),
+    );
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('播放参数', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              key: ValueKey('resolution-$_resolution'),
+              initialValue: _resolution,
+              decoration: const InputDecoration(labelText: '分辨率'),
+              items: [
+                for (final resolution in _resolutions())
+                  DropdownMenuItem(value: resolution, child: Text(resolution)),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() {
+                  _resolution = value;
+                  final option = _firstOptionForResolution(value);
+                  _codec = option?.codec;
+                  _bitrate = option?.bitrate;
+                });
+              },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: ValueKey('codec-$isOriginal-$_resolution-$_codec'),
+              initialValue: isOriginal ? null : _codec,
+              decoration: const InputDecoration(labelText: '编码'),
+              items: [
+                for (final codec in codecs)
+                  DropdownMenuItem(value: codec, child: Text(codec)),
+              ],
+              onChanged: isOriginal
+                  ? null
+                  : (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      setState(() {
+                        _codec = value;
+                        _bitrate = _firstOptionForCodec(value)?.bitrate;
+                      });
+                    },
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: ValueKey(
+                'bitrate-$isOriginal-$_resolution-$_codec-$_bitrate',
+              ),
+              initialValue: isOriginal ? null : _bitrate,
+              decoration: const InputDecoration(labelText: '码率'),
+              items: [
+                for (final bitrate in bitrates)
+                  DropdownMenuItem(value: bitrate, child: Text(bitrate)),
+              ],
+              onChanged: isOriginal
+                  ? null
+                  : (value) => setState(() => _bitrate = value),
+            ),
+            const SizedBox(height: 18),
+            FilledButton(
+              onPressed:
+                  selected == null ||
+                      selected.name ==
+                          widget.controller.selectedPlaybackOption?.name
+                  ? null
+                  : () {
+                      Navigator.of(context).pop();
+                      widget.onSelected();
+                      widget.controller.selectPlaybackOption(selected);
+                    },
+              child: Text(
+                selected == null ? '没有匹配的预设' : '应用 ${selected.label}',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<String> _resolutions() {
+    return _uniqueStrings(_options.map(_resolutionOf));
+  }
+
+  PlaybackOption? _selectedOption() {
+    for (final option in _options) {
+      if (option.direct) {
+        if (_resolution == _originalResolution) {
+          return option;
+        }
+        continue;
+      }
+      if (_resolutionOf(option) == _resolution &&
+          option.codec == _codec &&
+          option.bitrate == _bitrate) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  PlaybackOption? _firstDefaultOption() {
+    for (final option in _options) {
+      if (option.isDefault) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  PlaybackOption? _firstOptionForResolution(String resolution) {
+    for (final option in _options) {
+      if (_resolutionOf(option) == resolution) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  PlaybackOption? _firstOptionForCodec(String codec) {
+    for (final option in _options) {
+      if (!option.direct &&
+          _resolutionOf(option) == _resolution &&
+          option.codec == codec) {
+        return option;
+      }
+    }
+    return null;
+  }
+
+  static String _resolutionOf(PlaybackOption option) {
+    return option.direct
+        ? _originalResolution
+        : option.resolution ?? option.name;
+  }
+
+  static List<String> _uniqueStrings(Iterable<String?> values) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final value in values) {
+      if (value == null || value.isEmpty || !seen.add(value)) {
+        continue;
+      }
+      result.add(value);
+    }
+    return result;
   }
 }
 

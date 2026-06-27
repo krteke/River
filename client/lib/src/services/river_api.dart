@@ -21,8 +21,11 @@ abstract interface class VideoPlaybackApi {
     String root,
     String path, {
     double startSeconds = 0,
+    String? profile,
     String? replaceSessionId,
   });
+
+  Future<List<PlaybackOption>> getPlaybackOptions();
 
   Future<void> stopSession(String sessionId);
 }
@@ -150,6 +153,7 @@ class RiverApi implements VideoPlaybackApi {
     String root,
     String path, {
     double startSeconds = 0,
+    String? profile,
     String? replaceSessionId,
   }) async {
     try {
@@ -157,6 +161,7 @@ class RiverApi implements VideoPlaybackApi {
         'root': root,
         'path': path,
         if (startSeconds > 0) 'start_seconds': startSeconds,
+        if (profile != null && profile.isNotEmpty) 'profile': profile,
       };
       if (replaceSessionId case final sessionId?) {
         queryParameters['replace_session_id'] = sessionId;
@@ -169,6 +174,21 @@ class RiverApi implements VideoPlaybackApi {
       return PlayResponse.fromJson(response.data!);
     } catch (error) {
       throw _mapError(error, fallback: '无法开始视频播放');
+    }
+  }
+
+  @override
+  Future<List<PlaybackOption>> getPlaybackOptions() async {
+    try {
+      final response = await _dio.get<List<dynamic>>(
+        '/api/video/playback-options',
+      );
+      return (response.data ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(PlaybackOption.fromJson)
+          .toList();
+    } catch (error) {
+      throw _mapError(error, fallback: '无法读取播放参数');
     }
   }
 

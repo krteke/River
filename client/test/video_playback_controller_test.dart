@@ -167,13 +167,79 @@ void main() {
     );
     expect(controller.position, const Duration(seconds: 50));
   });
+
+  test(
+    'uses backend playback options and restarts playback when changed',
+    () async {
+      const options = [
+        PlaybackOption(
+          name: '1080p_8m',
+          label: 'h264 / 1080p / 8000k',
+          direct: false,
+          isDefault: true,
+          codec: 'h264',
+          resolution: '1080p',
+          bitrate: '8000k',
+        ),
+        PlaybackOption(
+          name: 'original',
+          label: '原画',
+          direct: true,
+          isDefault: false,
+        ),
+      ];
+      final api = _FakePlaybackApi(
+        options: options,
+        responses: [
+          const PlayResponse(
+            mode: 'hls',
+            url: '/stream/session-a/master.m3u8',
+            sessionId: 'session-a',
+            profile: '1080p_8m',
+            durationSeconds: 120,
+          ),
+          const PlayResponse(
+            mode: 'direct',
+            url: '/api/file?root=media&path=/movie.mkv',
+            profile: 'original',
+            startSeconds: 30,
+            durationSeconds: 120,
+          ),
+        ],
+      );
+      final engine = _FakePlaybackEngine();
+      final controller = VideoPlaybackController(
+        api: api,
+        root: 'media',
+        path: '/movie.mkv',
+        playbackEngine: engine,
+      );
+
+      await controller.initialize();
+      engine.emitPosition(const Duration(seconds: 30));
+      await Future<void>.delayed(Duration.zero);
+      await controller.selectPlaybackOption(options.last);
+      controller.dispose();
+
+      expect(api.calls.first.profile, '1080p_8m');
+      expect(api.calls.last.profile, 'original');
+      expect(api.calls.last.startSeconds, 30);
+      expect(api.calls.last.replaceSessionId, 'session-a');
+      expect(api.stoppedSessions, contains('session-a'));
+      expect(controller.selectedPlaybackOption?.name, 'original');
+    },
+  );
 }
 
 class _FakePlaybackApi implements VideoPlaybackApi {
-  _FakePlaybackApi({required List<PlayResponse> responses})
-    : _responses = List.of(responses);
+  _FakePlaybackApi({
+    required List<PlayResponse> responses,
+    List<PlaybackOption> options = const [],
+  }) : _responses = List.of(responses),
+       _options = List.of(options);
 
   final List<PlayResponse> _responses;
+  final List<PlaybackOption> _options;
   final List<_PlayCall> calls = [];
   final List<String> stoppedSessions = [];
 
@@ -193,6 +259,7 @@ class _FakePlaybackApi implements VideoPlaybackApi {
     String root,
     String path, {
     double startSeconds = 0,
+    String? profile,
     String? replaceSessionId,
   }) async {
     calls.add(
@@ -200,11 +267,15 @@ class _FakePlaybackApi implements VideoPlaybackApi {
         root: root,
         path: path,
         startSeconds: startSeconds,
+        profile: profile,
         replaceSessionId: replaceSessionId,
       ),
     );
     return _responses.removeAt(0);
   }
+
+  @override
+  Future<List<PlaybackOption>> getPlaybackOptions() async => _options;
 
   @override
   Future<void> stopSession(String sessionId) async {
@@ -295,11 +366,13 @@ class _PlayCall {
     required this.root,
     required this.path,
     required this.startSeconds,
+    required this.profile,
     required this.replaceSessionId,
   });
 
   final String root;
   final String path;
   final double startSeconds;
+  final String? profile;
   final String? replaceSessionId;
 }

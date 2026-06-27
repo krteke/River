@@ -73,6 +73,10 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "bad_request"
 		status = http.StatusBadRequest
 		message = "profile not found"
+	case errors.Is(err, transcode.ErrDirectProfile):
+		code = "bad_request"
+		status = http.StatusBadRequest
+		message = "direct profile cannot be transcoded"
 	default:
 		code = "internal_error"
 		status = http.StatusInternalServerError
