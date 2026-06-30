@@ -557,9 +557,9 @@ class _PlaybackOptionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selected = controller.selectedPlaybackOption;
-    return TextButton.icon(
-      style: TextButton.styleFrom(foregroundColor: Colors.white),
+    return IconButton(
+      tooltip: '播放参数',
+      color: Colors.white,
       onPressed: controller.seeking || controller.playbackOptions.isEmpty
           ? null
           : () {
@@ -567,6 +567,7 @@ class _PlaybackOptionButton extends StatelessWidget {
               showModalBottomSheet<void>(
                 context: context,
                 showDragHandle: true,
+                isScrollControlled: true,
                 builder: (context) => _PlaybackOptionSheet(
                   controller: controller,
                   onSelected: onSelected,
@@ -574,7 +575,6 @@ class _PlaybackOptionButton extends StatelessWidget {
               );
             },
       icon: const Icon(Icons.tune_rounded),
-      label: Text(selected?.label ?? '画质'),
     );
   }
 }
@@ -635,88 +635,102 @@ class _PlaybackOptionSheetState extends State<_PlaybackOptionSheet> {
           .map((option) => option.bitrate),
     );
 
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.82;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('播放参数', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              key: ValueKey('resolution-$_resolution'),
-              initialValue: _resolution,
-              decoration: const InputDecoration(labelText: '分辨率'),
-              items: [
-                for (final resolution in _resolutions())
-                  DropdownMenuItem(value: resolution, child: Text(resolution)),
-              ],
-              onChanged: (value) {
-                if (value == null) {
-                  return;
-                }
-                setState(() {
-                  _resolution = value;
-                  final option = _firstOptionForResolution(value);
-                  _codec = option?.codec;
-                  _bitrate = option?.bitrate;
-                });
-              },
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              key: ValueKey('codec-$isOriginal-$_resolution-$_codec'),
-              initialValue: isOriginal ? null : _codec,
-              decoration: const InputDecoration(labelText: '编码'),
-              items: [
-                for (final codec in codecs)
-                  DropdownMenuItem(value: codec, child: Text(codec)),
-              ],
-              onChanged: isOriginal
-                  ? null
-                  : (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      setState(() {
-                        _codec = value;
-                        _bitrate = _firstOptionForCodec(value)?.bitrate;
-                      });
-                    },
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              key: ValueKey(
-                'bitrate-$isOriginal-$_resolution-$_codec-$_bitrate',
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('播放参数', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                key: ValueKey('resolution-$_resolution'),
+                initialValue: _resolution,
+                decoration: const InputDecoration(
+                  labelText: '分辨率',
+                  isDense: true,
+                ),
+                items: [
+                  for (final resolution in _resolutions())
+                    DropdownMenuItem(
+                      value: resolution,
+                      child: Text(resolution),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  setState(() {
+                    _resolution = value;
+                    final option = _firstOptionForResolution(value);
+                    _codec = option?.codec;
+                    _bitrate = option?.bitrate;
+                  });
+                },
               ),
-              initialValue: isOriginal ? null : _bitrate,
-              decoration: const InputDecoration(labelText: '码率'),
-              items: [
-                for (final bitrate in bitrates)
-                  DropdownMenuItem(value: bitrate, child: Text(bitrate)),
-              ],
-              onChanged: isOriginal
-                  ? null
-                  : (value) => setState(() => _bitrate = value),
-            ),
-            const SizedBox(height: 18),
-            FilledButton(
-              onPressed:
-                  selected == null ||
-                      selected.name ==
-                          widget.controller.selectedPlaybackOption?.name
-                  ? null
-                  : () {
-                      Navigator.of(context).pop();
-                      widget.onSelected();
-                      widget.controller.selectPlaybackOption(selected);
-                    },
-              child: Text(
-                selected == null ? '没有匹配的预设' : '应用 ${selected.label}',
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                key: ValueKey('codec-$isOriginal-$_resolution-$_codec'),
+                initialValue: isOriginal ? null : _codec,
+                decoration: const InputDecoration(
+                  labelText: '编码',
+                  isDense: true,
+                ),
+                items: [
+                  for (final codec in codecs)
+                    DropdownMenuItem(value: codec, child: Text(codec)),
+                ],
+                onChanged: isOriginal
+                    ? null
+                    : (value) {
+                        if (value == null) {
+                          return;
+                        }
+                        setState(() {
+                          _codec = value;
+                          _bitrate = _firstOptionForCodec(value)?.bitrate;
+                        });
+                      },
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String>(
+                key: ValueKey(
+                  'bitrate-$isOriginal-$_resolution-$_codec-$_bitrate',
+                ),
+                initialValue: isOriginal ? null : _bitrate,
+                decoration: const InputDecoration(
+                  labelText: '码率',
+                  isDense: true,
+                ),
+                items: [
+                  for (final bitrate in bitrates)
+                    DropdownMenuItem(value: bitrate, child: Text(bitrate)),
+                ],
+                onChanged: isOriginal
+                    ? null
+                    : (value) => setState(() => _bitrate = value),
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed:
+                    selected == null ||
+                        selected.name ==
+                            widget.controller.selectedPlaybackOption?.name
+                    ? null
+                    : () {
+                        Navigator.of(context).pop();
+                        widget.onSelected();
+                        widget.controller.selectPlaybackOption(selected);
+                      },
+                child: Text(selected == null ? '没有匹配的预设' : '应用'),
+              ),
+            ],
+          ),
         ),
       ),
     );
