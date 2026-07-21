@@ -127,6 +127,35 @@ void main() {
     expect(engine.rate, 1.5);
   });
 
+  test('stops the player and HLS session after a playback error', () async {
+    final api = _FakePlaybackApi(
+      responses: [
+        const PlayResponse(
+          mode: 'hls',
+          url: '/stream/session/master.m3u8',
+          sessionId: 'session',
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.mkv',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    engine.emitError('tcp connection failed');
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    controller.dispose();
+
+    expect(controller.errorMessage, 'tcp connection failed');
+    expect(engine.calls, contains('stop'));
+    expect(api.stoppedSessions, contains('session'));
+  });
+
   test(
     'loads the default embedded text subtitle and can turn it off',
     () async {
@@ -425,6 +454,13 @@ class _FakePlaybackEngine implements PlaybackEngine {
   }
 
   @override
+  Future<void> stop() async {
+    calls.add('stop');
+    _playing = false;
+    _playingChanges.add(false);
+  }
+
+  @override
   Future<void> playOrPause() async {
     calls.add('playOrPause');
     _playing = !_playing;
@@ -467,6 +503,10 @@ class _FakePlaybackEngine implements PlaybackEngine {
 
   void emitNativeSubtitles(List<SubtitleTrack> tracks) {
     _nativeSubtitleTracks.add(tracks);
+  }
+
+  void emitError(String message) {
+    _errors.add(message);
   }
 
   void emitPosition(Duration position) {

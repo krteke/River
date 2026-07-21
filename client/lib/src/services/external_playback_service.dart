@@ -32,6 +32,7 @@ class ExternalPlaybackService {
     if (_backend.isDesktop) {
       try {
         await _backend.startMpv([
+          '--no-terminal',
           '--force-window=yes',
           for (final header in headers.entries)
             '--http-header-fields=${header.key}: ${header.value}',
@@ -61,7 +62,7 @@ class _DefaultExternalPlaybackBackend implements ExternalPlaybackBackend {
 
   @override
   Future<void> startMpv(List<String> arguments) async {
-    await Process.start('mpv', arguments);
+    await Process.start('mpv', arguments, mode: ProcessStartMode.detached);
   }
 
   @override

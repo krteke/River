@@ -14,6 +14,7 @@ void main() {
     );
 
     expect(backend.mpvArguments, [
+      '--no-terminal',
       '--force-window=yes',
       '--http-header-fields=X-River-Password: secret',
       'http://river.test/api/file?root=media&path=/movie.mkv',

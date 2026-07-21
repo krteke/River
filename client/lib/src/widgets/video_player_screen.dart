@@ -152,6 +152,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         url: _controller.originalFileUrl,
         headers: _controller.originalRequestHeaders,
       );
+      await _controller.stop();
+      if (mounted) {
+        await Navigator.of(context).maybePop();
+      }
     } on ExternalPlaybackException catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -181,26 +185,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
             );
           }
           if (_controller.errorMessage != null) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.error_outline,
-                      color: Colors.white70,
-                      size: 48,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _controller.errorMessage!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.white),
-                    ),
-                  ],
-                ),
-              ),
+            return _PlaybackErrorView(
+              message: _controller.errorMessage!,
+              onBack: () => Navigator.of(context).maybePop(),
+              onRetry: _controller.retry,
             );
           }
           return Stack(
@@ -257,6 +245,57 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 }
 
 enum _PlaybackAction { openOriginalExternally }
+
+class _PlaybackErrorView extends StatelessWidget {
+  const _PlaybackErrorView({
+    required this.message,
+    required this.onBack,
+    required this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback onBack;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.white70, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 24),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              alignment: WrapAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  label: const Text('返回文件列表'),
+                ),
+                FilledButton.icon(
+                  onPressed: () => unawaited(onRetry()),
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('重试'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _UnifiedVideoControls extends StatefulWidget {
   const _UnifiedVideoControls({

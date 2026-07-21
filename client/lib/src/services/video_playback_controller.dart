@@ -15,10 +15,7 @@ class VideoPlaybackController extends ChangeNotifier {
     PlaybackEngine? playbackEngine,
   }) {
     _playbackEngine = playbackEngine ?? MediaKitPlaybackEngine();
-    _errorSubscription = _playbackEngine.errors.listen((message) {
-      errorMessage = message;
-      notifyListeners();
-    });
+    _errorSubscription = _playbackEngine.errors.listen(_handlePlaybackError);
     _positionSubscription = _playbackEngine.positions.listen((value) {
       position = _displayPosition(value);
       notifyListeners();
@@ -74,8 +71,11 @@ class VideoPlaybackController extends ChangeNotifier {
   String? subtitleMessage;
   bool subtitleLoading = false;
   bool _disposed = false;
+  bool _playbackStopped = false;
+  Future<void>? _stopFuture;
   bool _subtitleSelectionInitialized = false;
   Duration _hlsBaseOffset = Duration.zero;
+  int _playbackGeneration = 0;
 
   VideoController get videoController => _playbackEngine.videoController;
   bool get usesServerTimeline =>
@@ -107,6 +107,10 @@ class VideoPlaybackController extends ChangeNotifier {
       await _openResponse(response);
     } catch (error) {
       errorMessage = error is RiverApiException ? error.message : '播放器初始化失败';
+      if (!_disposed) {
+        notifyListeners();
+      }
+      unawaited(stop());
     } finally {
       loading = false;
       if (!_disposed) {
@@ -117,6 +121,59 @@ class VideoPlaybackController extends ChangeNotifier {
 
   Future<void> togglePlay() {
     return _playbackEngine.playOrPause();
+  }
+
+  Future<void> stop() async {
+    if (_stopFuture case final inProgress?) {
+      return inProgress;
+    }
+    if (_playbackStopped) {
+      return;
+    }
+    _playbackStopped = true;
+    final stopFuture = _stopInternal();
+    _stopFuture = stopFuture;
+    unawaited(
+      stopFuture.whenComplete(() {
+        if (identical(_stopFuture, stopFuture)) {
+          _stopFuture = null;
+        }
+      }),
+    );
+    return stopFuture;
+  }
+
+  Future<void> _stopInternal() async {
+    _playbackGeneration++;
+    final sessionId = playResponse?.sessionId;
+    try {
+      await _playbackEngine.stop();
+    } catch (_) {
+      // Stopping is cleanup. Do not leave an already failed screen unusable.
+    } finally {
+      if (sessionId != null) {
+        try {
+          await api.stopSession(sessionId);
+        } catch (_) {
+          // The player has already stopped. Session cleanup is best-effort.
+        }
+      }
+    }
+  }
+
+  Future<void> retry() async {
+    if (loading || _disposed) {
+      return;
+    }
+    await stop();
+    _subtitleSelectionInitialized = false;
+    subtitles = const [];
+    nativeSubtitles = const [];
+    selectedSubtitle = null;
+    selectedNativeSubtitle = null;
+    subtitleMessage = null;
+    errorMessage = null;
+    await initialize();
   }
 
   Future<void> setPlaybackRate(double rate) async {
@@ -213,6 +270,10 @@ class VideoPlaybackController extends ChangeNotifier {
     } catch (error) {
       selectedPlaybackOption = _optionForResponse(previousResponse);
       errorMessage = error is RiverApiException ? error.message : '切换播放参数失败';
+      if (!_disposed) {
+        notifyListeners();
+      }
+      unawaited(stop());
     } finally {
       seeking = false;
       if (!_disposed) {
@@ -259,6 +320,10 @@ class VideoPlaybackController extends ChangeNotifier {
       await _openResponse(next);
     } catch (error) {
       errorMessage = error is RiverApiException ? error.message : '跳转播放位置失败';
+      if (!_disposed) {
+        notifyListeners();
+      }
+      unawaited(stop());
     } finally {
       seeking = false;
       if (!_disposed) {
@@ -270,20 +335,23 @@ class VideoPlaybackController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    final sessionId = playResponse?.sessionId;
-    if (sessionId != null) {
-      unawaited(api.stopSession(sessionId));
-    }
     unawaited(_errorSubscription.cancel());
     unawaited(_positionSubscription.cancel());
     unawaited(_durationSubscription.cancel());
     unawaited(_playingSubscription.cancel());
     unawaited(_nativeSubtitleTracksSubscription.cancel());
-    unawaited(_playbackEngine.dispose());
+    unawaited(_shutdown());
     super.dispose();
   }
 
+  Future<void> _shutdown() async {
+    await stop();
+    await _playbackEngine.dispose();
+  }
+
   Future<void> _openResponse(PlayResponse response) async {
+    final generation = ++_playbackGeneration;
+    _playbackStopped = false;
     playResponse = response;
     selectedPlaybackOption = _optionForResponse(response);
     if (response.isHls) {
@@ -308,13 +376,29 @@ class VideoPlaybackController extends ChangeNotifier {
     notifyListeners();
 
     await _playbackEngine.forceSeekable();
+    if (_disposed || generation != _playbackGeneration) {
+      return;
+    }
     await _playbackEngine.open(_mediaFor(response));
+    if (_disposed || generation != _playbackGeneration) {
+      return;
+    }
     if (playbackRate != 1) {
       await _playbackEngine.setRate(playbackRate);
     }
     if (response.isHls) {
       await _restoreSubtitle();
     }
+  }
+
+  void _handlePlaybackError(String message) {
+    if (_disposed || _playbackStopped || _stopFuture != null) {
+      return;
+    }
+    errorMessage = message;
+    loading = false;
+    notifyListeners();
+    unawaited(stop());
   }
 
   void _syncSubtitles(List<EmbeddedSubtitle> nextSubtitles) {
@@ -468,6 +552,8 @@ abstract interface class PlaybackEngine {
 
   Future<void> open(Media media);
 
+  Future<void> stop();
+
   Future<void> playOrPause();
 
   Future<void> seek(Duration position);
@@ -530,6 +616,11 @@ class MediaKitPlaybackEngine implements PlaybackEngine {
   @override
   Future<void> open(Media media) {
     return _player.open(media, play: true);
+  }
+
+  @override
+  Future<void> stop() {
+    return _player.stop();
   }
 
   @override
