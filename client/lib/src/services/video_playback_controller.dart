@@ -33,6 +33,16 @@ class VideoPlaybackController extends ChangeNotifier {
       playing = value;
       notifyListeners();
     });
+    _nativeSubtitleTracksSubscription = _playbackEngine.nativeSubtitleTracks
+        .listen((tracks) {
+          if (playResponse?.isHls != false) {
+            return;
+          }
+          nativeSubtitles = tracks
+              .where((track) => track.id != 'auto' && track.id != 'no')
+              .toList();
+          notifyListeners();
+        });
   }
 
   final VideoPlaybackApi api;
@@ -44,6 +54,8 @@ class VideoPlaybackController extends ChangeNotifier {
   late final StreamSubscription<Duration> _positionSubscription;
   late final StreamSubscription<Duration> _durationSubscription;
   late final StreamSubscription<bool> _playingSubscription;
+  late final StreamSubscription<List<SubtitleTrack>>
+  _nativeSubtitleTracksSubscription;
 
   PlayResponse? playResponse;
   String? errorMessage;
@@ -57,6 +69,8 @@ class VideoPlaybackController extends ChangeNotifier {
   PlaybackOption? selectedPlaybackOption;
   List<EmbeddedSubtitle> subtitles = const [];
   EmbeddedSubtitle? selectedSubtitle;
+  List<SubtitleTrack> nativeSubtitles = const [];
+  SubtitleTrack? selectedNativeSubtitle;
   String? subtitleMessage;
   bool subtitleLoading = false;
   bool _disposed = false;
@@ -66,6 +80,12 @@ class VideoPlaybackController extends ChangeNotifier {
   VideoController get videoController => _playbackEngine.videoController;
   bool get usesServerTimeline =>
       playResponse?.isHls == true && (playResponse?.durationSeconds ?? 0) > 0;
+  bool get usesNativeSubtitleTracks => playResponse?.isHls == false;
+  bool get hasSubtitleChoices => usesNativeSubtitleTracks
+      ? nativeSubtitles.isNotEmpty
+      : subtitles.isNotEmpty;
+  String get originalFileUrl => api.originalFileUrl(root, path);
+  Map<String, String> get originalRequestHeaders => api.authHeaders ?? const {};
 
   Future<void> initialize() async {
     loading = true;
@@ -132,6 +152,27 @@ class VideoPlaybackController extends ChangeNotifier {
     } catch (error) {
       selectedSubtitle = previous;
       subtitleMessage = error is RiverApiException ? error.message : '无法加载字幕';
+    } finally {
+      subtitleLoading = false;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> selectNativeSubtitle(SubtitleTrack track) async {
+    if (subtitleLoading || !usesNativeSubtitleTracks) {
+      return;
+    }
+
+    subtitleLoading = true;
+    subtitleMessage = null;
+    notifyListeners();
+    try {
+      await _playbackEngine.selectNativeSubtitle(track);
+      selectedNativeSubtitle = track;
+    } catch (_) {
+      subtitleMessage = '无法切换内嵌字幕';
     } finally {
       subtitleLoading = false;
       if (!_disposed) {
@@ -237,6 +278,7 @@ class VideoPlaybackController extends ChangeNotifier {
     unawaited(_positionSubscription.cancel());
     unawaited(_durationSubscription.cancel());
     unawaited(_playingSubscription.cancel());
+    unawaited(_nativeSubtitleTracksSubscription.cancel());
     unawaited(_playbackEngine.dispose());
     super.dispose();
   }
@@ -244,7 +286,17 @@ class VideoPlaybackController extends ChangeNotifier {
   Future<void> _openResponse(PlayResponse response) async {
     playResponse = response;
     selectedPlaybackOption = _optionForResponse(response);
-    _syncSubtitles(response.subtitles);
+    if (response.isHls) {
+      _syncSubtitles(response.subtitles);
+      nativeSubtitles = const [];
+      selectedNativeSubtitle = null;
+    } else {
+      subtitles = const [];
+      selectedSubtitle = null;
+      nativeSubtitles = const [];
+      selectedNativeSubtitle = SubtitleTrack.auto();
+      subtitleMessage = null;
+    }
     _hlsBaseOffset = response.isHls
         ? _durationFromSeconds(response.startSeconds)
         : Duration.zero;
@@ -260,7 +312,9 @@ class VideoPlaybackController extends ChangeNotifier {
     if (playbackRate != 1) {
       await _playbackEngine.setRate(playbackRate);
     }
-    await _restoreSubtitle();
+    if (response.isHls) {
+      await _restoreSubtitle();
+    }
   }
 
   void _syncSubtitles(List<EmbeddedSubtitle> nextSubtitles) {
@@ -406,6 +460,8 @@ abstract interface class PlaybackEngine {
 
   Stream<bool> get playingChanges;
 
+  Stream<List<SubtitleTrack>> get nativeSubtitleTracks;
+
   bool get playing;
 
   Future<void> forceSeekable();
@@ -422,11 +478,20 @@ abstract interface class PlaybackEngine {
 
   Future<void> clearSubtitle();
 
+  Future<void> selectNativeSubtitle(SubtitleTrack track);
+
   Future<void> dispose();
 }
 
 class MediaKitPlaybackEngine implements PlaybackEngine {
-  MediaKitPlaybackEngine({Player? player}) : _player = player ?? Player() {
+  MediaKitPlaybackEngine({Player? player})
+    : _player =
+          player ??
+          Player(
+            configuration: PlayerConfiguration(
+              libass: defaultTargetPlatform != TargetPlatform.android,
+            ),
+          ) {
     videoController = VideoController(_player);
   }
 
@@ -446,6 +511,10 @@ class MediaKitPlaybackEngine implements PlaybackEngine {
 
   @override
   Stream<bool> get playingChanges => _player.stream.playing;
+
+  @override
+  Stream<List<SubtitleTrack>> get nativeSubtitleTracks =>
+      _player.stream.tracks.map((tracks) => tracks.subtitle);
 
   @override
   bool get playing => _player.state.playing;
@@ -488,6 +557,11 @@ class MediaKitPlaybackEngine implements PlaybackEngine {
   @override
   Future<void> clearSubtitle() {
     return _player.setSubtitleTrack(SubtitleTrack.no());
+  }
+
+  @override
+  Future<void> selectNativeSubtitle(SubtitleTrack track) {
+    return _player.setSubtitleTrack(track);
   }
 
   @override

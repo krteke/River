@@ -2,9 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/file_models.dart';
+import '../services/external_playback_service.dart';
 import '../services/river_api.dart';
 import '../services/video_playback_controller.dart';
 
@@ -31,6 +33,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   static const int _gestureMaxSeconds = 120;
 
   late final VideoPlaybackController _controller;
+  final ExternalPlaybackService _externalPlaybackService =
+      ExternalPlaybackService();
   Duration? _gestureBasePosition;
   Duration _gestureOffset = Duration.zero;
   double _gestureDelta = 0;
@@ -115,6 +119,48 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
   }
 
+  Future<void> _showPlaybackMenu(Offset globalPosition) async {
+    if (_controller.loading || !mounted) {
+      return;
+    }
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<_PlaybackAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: _PlaybackAction.openOriginalExternally,
+          child: ListTile(
+            leading: Icon(Icons.open_in_new_rounded),
+            title: Text('用外部播放器播放原画'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+    );
+    if (action == _PlaybackAction.openOriginalExternally) {
+      await _openOriginalExternally();
+    }
+  }
+
+  Future<void> _openOriginalExternally() async {
+    try {
+      await _externalPlaybackService.openOriginal(
+        url: _controller.originalFileUrl,
+        headers: _controller.originalRequestHeaders,
+      );
+    } on ExternalPlaybackException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -172,6 +218,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onTap: () {},
+                  onLongPressStart: (details) =>
+                      _showPlaybackMenu(details.globalPosition),
+                  onSecondaryTapDown: (details) =>
+                      _showPlaybackMenu(details.globalPosition),
                   onHorizontalDragStart: _handleSeekDragStart,
                   onHorizontalDragUpdate: _handleSeekDragUpdate,
                   onHorizontalDragEnd: _handleSeekDragEnd,
@@ -205,6 +255,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 }
+
+enum _PlaybackAction { openOriginalExternally }
 
 class _UnifiedVideoControls extends StatefulWidget {
   const _UnifiedVideoControls({
@@ -455,7 +507,7 @@ class _ControlPanel extends StatelessWidget {
                     controller: controller,
                     onSelected: onShowControls,
                   ),
-                  if (!compact && controller.subtitles.isNotEmpty) ...[
+                  if (!compact && controller.hasSubtitleChoices) ...[
                     const SizedBox(width: 4),
                     _SubtitleButton(
                       controller: controller,
@@ -522,7 +574,7 @@ class _ControlPanel extends StatelessWidget {
                         },
                   icon: Icons.forward_10_rounded,
                 ),
-                if (compact && controller.subtitles.isNotEmpty) ...[
+                if (compact && controller.hasSubtitleChoices) ...[
                   const SizedBox(width: 8),
                   _SubtitleButton(
                     controller: controller,
@@ -613,14 +665,21 @@ class _SubtitleButton extends StatelessWidget {
                 context: context,
                 showDragHandle: true,
                 isScrollControlled: true,
-                builder: (context) => _SubtitleSheet(
-                  controller: controller,
-                  onSelected: onSelected,
-                ),
+                builder: (context) => controller.usesNativeSubtitleTracks
+                    ? _NativeSubtitleSheet(
+                        controller: controller,
+                        onSelected: onSelected,
+                      )
+                    : _SubtitleSheet(
+                        controller: controller,
+                        onSelected: onSelected,
+                      ),
               );
             },
       icon: Icon(
-        controller.selectedSubtitle == null
+        (controller.usesNativeSubtitleTracks
+                ? controller.selectedNativeSubtitle?.id == 'no'
+                : controller.selectedSubtitle == null)
             ? Icons.subtitles_outlined
             : Icons.subtitles_rounded,
       ),
@@ -729,6 +788,109 @@ class _SubtitleSheet extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+class _NativeSubtitleSheet extends StatelessWidget {
+  const _NativeSubtitleSheet({
+    required this.controller,
+    required this.onSelected,
+  });
+
+  final VideoPlaybackController controller;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return SafeArea(
+          top: false,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('内嵌字幕'),
+                      subtitle: Text('原画直连，保留字幕格式与特效'),
+                    ),
+                    _nativeSubtitleTile(
+                      context,
+                      title: '自动选择',
+                      trackId: 'auto',
+                    ),
+                    _nativeSubtitleTile(context, title: '关闭字幕', trackId: 'no'),
+                    for (final track in controller.nativeSubtitles)
+                      _nativeSubtitleTile(
+                        context,
+                        title: _nativeSubtitleTitle(track),
+                        subtitle: track.codec,
+                        track: track,
+                      ),
+                    if (controller.subtitleLoading)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: LinearProgressIndicator(),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _nativeSubtitleTile(
+    BuildContext context, {
+    required String title,
+    String? subtitle,
+    String? trackId,
+    SubtitleTrack? track,
+  }) {
+    final selected =
+        controller.selectedNativeSubtitle?.id == (trackId ?? track!.id);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(selected ? Icons.check_rounded : Icons.subtitles_outlined),
+      title: Text(title),
+      subtitle: subtitle == null || subtitle.isEmpty ? null : Text(subtitle),
+      enabled: !controller.subtitleLoading,
+      onTap: controller.subtitleLoading
+          ? null
+          : () async {
+              await controller.selectNativeSubtitle(
+                track ??
+                    (trackId == 'no'
+                        ? const SubtitleTrack('no', null, null)
+                        : const SubtitleTrack('auto', null, null)),
+              );
+              onSelected();
+              if (context.mounted) {
+                Navigator.of(context).pop();
+              }
+            },
+    );
+  }
+
+  String _nativeSubtitleTitle(SubtitleTrack track) {
+    final parts = <String>[
+      if (track.title != null && track.title!.isNotEmpty) track.title!,
+      if (track.language != null && track.language!.isNotEmpty) track.language!,
+      if ((track.title == null || track.title!.isEmpty) &&
+          (track.language == null || track.language!.isEmpty))
+        '字幕 ${track.id}',
+    ];
+    return parts.join(' · ');
   }
 }
 

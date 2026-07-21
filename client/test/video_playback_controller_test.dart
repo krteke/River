@@ -67,6 +67,41 @@ void main() {
     expect(engine.seekedPosition, const Duration(seconds: 30));
   });
 
+  test('keeps native subtitle tracks for direct playback', () async {
+    final api = _FakePlaybackApi(
+      responses: [
+        const PlayResponse(
+          mode: 'direct',
+          url: '/api/file?root=media&path=/movie.mkv',
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.mkv',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    engine.emitNativeSubtitles([
+      SubtitleTrack.auto(),
+      SubtitleTrack.no(),
+      const SubtitleTrack('2', 'Styled subtitle', 'jpn', codec: 'ass'),
+    ]);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(controller.usesNativeSubtitleTracks, isTrue);
+    expect(controller.nativeSubtitles, hasLength(1));
+    expect(engine.calls, isNot(contains('clearSubtitle')));
+
+    await controller.selectNativeSubtitle(controller.nativeSubtitles.single);
+    controller.dispose();
+
+    expect(engine.selectedNativeSubtitle?.id, '2');
+  });
+
   test('updates playback rate through the playback engine', () async {
     final api = _FakePlaybackApi(
       responses: [
@@ -299,6 +334,11 @@ class _FakePlaybackApi implements VideoPlaybackApi {
   }
 
   @override
+  String originalFileUrl(String root, String path) {
+    return 'http://river.test/api/file?root=$root&path=$path';
+  }
+
+  @override
   Future<PlayResponse> playVideo(
     String root,
     String path, {
@@ -338,6 +378,8 @@ class _FakePlaybackEngine implements PlaybackEngine {
   final _positions = StreamController<Duration>.broadcast();
   final _durations = StreamController<Duration>.broadcast();
   final _playingChanges = StreamController<bool>.broadcast();
+  final _nativeSubtitleTracks =
+      StreamController<List<SubtitleTrack>>.broadcast();
   final calls = <String>[];
 
   Media? openedMedia;
@@ -345,6 +387,7 @@ class _FakePlaybackEngine implements PlaybackEngine {
   bool _playing = true;
   double rate = 1;
   String? subtitle;
+  SubtitleTrack? selectedNativeSubtitle;
 
   @override
   VideoController get videoController => throw UnsupportedError(
@@ -362,6 +405,10 @@ class _FakePlaybackEngine implements PlaybackEngine {
 
   @override
   Stream<bool> get playingChanges => _playingChanges.stream;
+
+  @override
+  Stream<List<SubtitleTrack>> get nativeSubtitleTracks =>
+      _nativeSubtitleTracks.stream;
 
   @override
   bool get playing => _playing;
@@ -412,6 +459,16 @@ class _FakePlaybackEngine implements PlaybackEngine {
     subtitle = null;
   }
 
+  @override
+  Future<void> selectNativeSubtitle(SubtitleTrack track) async {
+    calls.add('selectNativeSubtitle');
+    selectedNativeSubtitle = track;
+  }
+
+  void emitNativeSubtitles(List<SubtitleTrack> tracks) {
+    _nativeSubtitleTracks.add(tracks);
+  }
+
   void emitPosition(Duration position) {
     _positions.add(position);
   }
@@ -424,6 +481,7 @@ class _FakePlaybackEngine implements PlaybackEngine {
       _positions.close(),
       _durations.close(),
       _playingChanges.close(),
+      _nativeSubtitleTracks.close(),
     ]);
   }
 }
