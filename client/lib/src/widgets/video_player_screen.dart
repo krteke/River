@@ -419,6 +419,7 @@ class _ControlPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
+    final compact = MediaQuery.sizeOf(context).width < 500;
     return IconTheme(
       data: const IconThemeData(color: Colors.white),
       child: DefaultTextStyle(
@@ -454,6 +455,13 @@ class _ControlPanel extends StatelessWidget {
                     controller: controller,
                     onSelected: onShowControls,
                   ),
+                  if (!compact && controller.subtitles.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    _SubtitleButton(
+                      controller: controller,
+                      onSelected: onShowControls,
+                    ),
+                  ],
                   const SizedBox(width: 8),
                   _SpeedMenu(
                     controller: controller,
@@ -514,6 +522,13 @@ class _ControlPanel extends StatelessWidget {
                         },
                   icon: Icons.forward_10_rounded,
                 ),
+                if (compact && controller.subtitles.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  _SubtitleButton(
+                    controller: controller,
+                    onSelected: onShowControls,
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 4),
@@ -575,6 +590,144 @@ class _PlaybackOptionButton extends StatelessWidget {
               );
             },
       icon: const Icon(Icons.tune_rounded),
+    );
+  }
+}
+
+class _SubtitleButton extends StatelessWidget {
+  const _SubtitleButton({required this.controller, required this.onSelected});
+
+  final VideoPlaybackController controller;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: '字幕',
+      color: Colors.white,
+      onPressed: controller.seeking || controller.subtitleLoading
+          ? null
+          : () {
+              onSelected();
+              showModalBottomSheet<void>(
+                context: context,
+                showDragHandle: true,
+                isScrollControlled: true,
+                builder: (context) => _SubtitleSheet(
+                  controller: controller,
+                  onSelected: onSelected,
+                ),
+              );
+            },
+      icon: Icon(
+        controller.selectedSubtitle == null
+            ? Icons.subtitles_outlined
+            : Icons.subtitles_rounded,
+      ),
+    );
+  }
+}
+
+class _SubtitleSheet extends StatelessWidget {
+  const _SubtitleSheet({required this.controller, required this.onSelected});
+
+  final VideoPlaybackController controller;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return SafeArea(
+          top: false,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('字幕'),
+                      subtitle: Text('文本字幕会转换为 WebVTT 后显示'),
+                    ),
+                    if (controller.subtitleMessage case final message?)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          message,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                        controller.selectedSubtitle == null
+                            ? Icons.check_rounded
+                            : null,
+                      ),
+                      title: const Text('关闭字幕'),
+                      onTap: controller.seeking || controller.subtitleLoading
+                          ? null
+                          : () async {
+                              await controller.selectSubtitle(null);
+                              onSelected();
+                              if (context.mounted) {
+                                Navigator.of(context).pop();
+                              }
+                            },
+                    ),
+                    for (final subtitle in controller.subtitles)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        enabled:
+                            subtitle.text &&
+                            !controller.seeking &&
+                            !controller.subtitleLoading,
+                        leading: Icon(
+                          controller.selectedSubtitle?.index == subtitle.index
+                              ? Icons.check_rounded
+                              : subtitle.text
+                              ? Icons.subtitles_outlined
+                              : Icons.image_not_supported_outlined,
+                        ),
+                        title: Text(subtitle.label),
+                        subtitle: subtitle.text
+                            ? Text(subtitle.codec)
+                            : Text('${subtitle.codec} 图形字幕，暂不支持'),
+                        onTap:
+                            subtitle.text &&
+                                !controller.seeking &&
+                                !controller.subtitleLoading
+                            ? () async {
+                                await controller.selectSubtitle(subtitle);
+                                onSelected();
+                                if (controller.subtitleMessage == null &&
+                                    context.mounted) {
+                                  Navigator.of(context).pop();
+                                }
+                              }
+                            : null,
+                      ),
+                    if (controller.subtitleLoading)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: LinearProgressIndicator(),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

@@ -104,6 +104,7 @@ class PlayResponse {
     this.profile,
     this.startSeconds = 0,
     this.durationSeconds = 0,
+    this.subtitles = const [],
   });
 
   final String mode;
@@ -113,6 +114,7 @@ class PlayResponse {
   final String? profile;
   final double startSeconds;
   final double durationSeconds;
+  final List<EmbeddedSubtitle> subtitles;
 
   bool get isHls => mode == 'hls';
 
@@ -125,7 +127,53 @@ class PlayResponse {
       profile: json['profile'] as String?,
       startSeconds: (json['start_seconds'] as num?)?.toDouble() ?? 0,
       durationSeconds: (json['duration_seconds'] as num?)?.toDouble() ?? 0,
+      subtitles: (json['subtitles'] as List<dynamic>? ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(EmbeddedSubtitle.fromJson)
+          .toList(),
     );
+  }
+}
+
+class EmbeddedSubtitle {
+  const EmbeddedSubtitle({
+    required this.index,
+    required this.codec,
+    required this.text,
+    this.language,
+    this.title,
+    this.isDefault = false,
+    this.forced = false,
+  });
+
+  final int index;
+  final String codec;
+  final bool text;
+  final String? language;
+  final String? title;
+  final bool isDefault;
+  final bool forced;
+
+  factory EmbeddedSubtitle.fromJson(Map<String, dynamic> json) {
+    return EmbeddedSubtitle(
+      index: (json['index'] as num).toInt(),
+      codec: json['codec'] as String? ?? '',
+      text: json['text'] as bool? ?? false,
+      language: json['language'] as String?,
+      title: json['title'] as String?,
+      isDefault: json['default'] as bool? ?? false,
+      forced: json['forced'] as bool? ?? false,
+    );
+  }
+
+  String get label {
+    final parts = <String>[
+      if (title != null && title!.isNotEmpty) title!,
+      if (language != null && language!.isNotEmpty) language!,
+      if (title == null || title!.isEmpty) codec,
+      if (forced) '强制',
+    ];
+    return parts.join(' · ');
   }
 }
 

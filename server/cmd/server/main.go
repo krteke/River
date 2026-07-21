@@ -39,7 +39,7 @@ func main() {
 		slog.Info("root config", "id", root.ID, "name", root.Name, "path", root.RealPath)
 	}
 
-	mediaService := media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback)
+	mediaService := media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback)
 	thumbnailService := thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail)
 	if err := thumbnailService.Cleanup(); err != nil {
 		logger.Warn("thumbnail cache cleanup failed", "error", err)

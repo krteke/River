@@ -55,7 +55,12 @@ class VideoPlaybackController extends ChangeNotifier {
   Duration duration = Duration.zero;
   List<PlaybackOption> playbackOptions = const [];
   PlaybackOption? selectedPlaybackOption;
+  List<EmbeddedSubtitle> subtitles = const [];
+  EmbeddedSubtitle? selectedSubtitle;
+  String? subtitleMessage;
+  bool subtitleLoading = false;
   bool _disposed = false;
+  bool _subtitleSelectionInitialized = false;
   Duration _hlsBaseOffset = Duration.zero;
 
   VideoController get videoController => _playbackEngine.videoController;
@@ -101,6 +106,38 @@ class VideoPlaybackController extends ChangeNotifier {
     playbackRate = rate;
     notifyListeners();
     await _playbackEngine.setRate(rate);
+  }
+
+  Future<void> selectSubtitle(EmbeddedSubtitle? subtitle) async {
+    if (subtitleLoading || subtitle == selectedSubtitle) {
+      return;
+    }
+    if (subtitle != null && !subtitle.text) {
+      subtitleMessage = '该字幕是图形字幕，当前无法作为独立字幕播放';
+      notifyListeners();
+      return;
+    }
+
+    final previous = selectedSubtitle;
+    subtitleLoading = true;
+    subtitleMessage = null;
+    notifyListeners();
+    try {
+      if (subtitle == null) {
+        await _playbackEngine.clearSubtitle();
+      } else {
+        await _loadSubtitle(subtitle);
+      }
+      selectedSubtitle = subtitle;
+    } catch (error) {
+      selectedSubtitle = previous;
+      subtitleMessage = error is RiverApiException ? error.message : '无法加载字幕';
+    } finally {
+      subtitleLoading = false;
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
   }
 
   Future<void> selectPlaybackOption(PlaybackOption option) async {
@@ -207,6 +244,7 @@ class VideoPlaybackController extends ChangeNotifier {
   Future<void> _openResponse(PlayResponse response) async {
     playResponse = response;
     selectedPlaybackOption = _optionForResponse(response);
+    _syncSubtitles(response.subtitles);
     _hlsBaseOffset = response.isHls
         ? _durationFromSeconds(response.startSeconds)
         : Duration.zero;
@@ -222,6 +260,70 @@ class VideoPlaybackController extends ChangeNotifier {
     if (playbackRate != 1) {
       await _playbackEngine.setRate(playbackRate);
     }
+    await _restoreSubtitle();
+  }
+
+  void _syncSubtitles(List<EmbeddedSubtitle> nextSubtitles) {
+    subtitles = nextSubtitles;
+    if (!_subtitleSelectionInitialized) {
+      for (final track in nextSubtitles) {
+        if (track.text && track.isDefault) {
+          selectedSubtitle = track;
+          break;
+        }
+      }
+      for (final track in nextSubtitles) {
+        if (selectedSubtitle == null && track.text && track.forced) {
+          selectedSubtitle = track;
+          break;
+        }
+      }
+      _subtitleSelectionInitialized = true;
+      return;
+    }
+    final selected = selectedSubtitle;
+    if (selected == null) {
+      return;
+    }
+    for (final track in nextSubtitles) {
+      if (track.index == selected.index && track.text) {
+        selectedSubtitle = track;
+        return;
+      }
+    }
+    selectedSubtitle = null;
+  }
+
+  Future<void> _restoreSubtitle() async {
+    await _playbackEngine.clearSubtitle();
+    final subtitle = selectedSubtitle;
+    if (subtitle == null) {
+      return;
+    }
+    try {
+      await _loadSubtitle(subtitle);
+    } catch (error) {
+      selectedSubtitle = null;
+      subtitleMessage = error is RiverApiException ? error.message : '无法加载字幕';
+      if (!_disposed) {
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _loadSubtitle(EmbeddedSubtitle subtitle) async {
+    final content = await api.getSubtitle(root, path, subtitle.index);
+    if (content.isEmpty) {
+      throw const RiverApiException('服务器返回了空字幕');
+    }
+    if (_disposed) {
+      return;
+    }
+    await _playbackEngine.setSubtitle(
+      content,
+      title: subtitle.title,
+      language: subtitle.language,
+    );
   }
 
   PlaybackOption? _initialPlaybackOption(List<PlaybackOption> options) {
@@ -316,6 +418,10 @@ abstract interface class PlaybackEngine {
 
   Future<void> setRate(double rate);
 
+  Future<void> setSubtitle(String content, {String? title, String? language});
+
+  Future<void> clearSubtitle();
+
   Future<void> dispose();
 }
 
@@ -370,6 +476,18 @@ class MediaKitPlaybackEngine implements PlaybackEngine {
   @override
   Future<void> setRate(double rate) {
     return _player.setRate(rate);
+  }
+
+  @override
+  Future<void> setSubtitle(String content, {String? title, String? language}) {
+    return _player.setSubtitleTrack(
+      SubtitleTrack.data(content, title: title, language: language),
+    );
+  }
+
+  @override
+  Future<void> clearSubtitle() {
+    return _player.setSubtitleTrack(SubtitleTrack.no());
   }
 
   @override

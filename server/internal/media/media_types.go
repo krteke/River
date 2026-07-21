@@ -42,6 +42,8 @@ type AudioTrack struct {
 
 type SubtitleTrack struct {
 	TrackBase
+
+	Text bool `json:"text"`
 }
 
 type TrackBase struct {

@@ -27,6 +27,8 @@ abstract interface class VideoPlaybackApi {
 
   Future<List<PlaybackOption>> getPlaybackOptions();
 
+  Future<String> getSubtitle(String root, String path, int trackIndex);
+
   Future<void> stopSession(String sessionId);
 }
 
@@ -189,6 +191,20 @@ class RiverApi implements VideoPlaybackApi {
           .toList();
     } catch (error) {
       throw _mapError(error, fallback: '无法读取播放参数');
+    }
+  }
+
+  @override
+  Future<String> getSubtitle(String root, String path, int trackIndex) async {
+    try {
+      final response = await _dio.get<String>(
+        '/api/video/subtitle',
+        queryParameters: {'root': root, 'path': path, 'track': trackIndex},
+        options: Options(responseType: ResponseType.plain),
+      );
+      return response.data ?? '';
+    } catch (error) {
+      throw _mapError(error, fallback: '无法加载字幕');
     }
   }
 

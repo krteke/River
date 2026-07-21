@@ -53,11 +53,11 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "unsupported_file_type"
 		status = http.StatusUnsupportedMediaType
 		message = "file does not support thumbnails"
-	case errors.Is(err, errTextFileTooLarge):
+	case errors.Is(err, errTextFileTooLarge), errors.Is(err, media.ErrSubtitleTooLarge):
 		code = "text_file_too_large"
 		status = http.StatusRequestEntityTooLarge
 		message = "text file is too large to display"
-	case errors.Is(err, errUnsupportedFileType):
+	case errors.Is(err, errUnsupportedFileType), errors.Is(err, media.ErrUnsupportedSubtitle):
 		code = "unsupported_file_type"
 		status = http.StatusUnsupportedMediaType
 		message = "file type is not supported for inline display"
@@ -65,7 +65,7 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "transcode_queue_full"
 		status = http.StatusServiceUnavailable
 		message = "too many transcode jobs"
-	case errors.Is(err, transcode.ErrFFmpegNotAvailable), errors.Is(err, media.ErrFFprobeNotAvailable), errors.Is(err, thumbnail.ErrFFmpegNotAvailable):
+	case errors.Is(err, transcode.ErrFFmpegNotAvailable), errors.Is(err, media.ErrFFprobeNotAvailable), errors.Is(err, media.ErrFFmpegNotAvailable), errors.Is(err, thumbnail.ErrFFmpegNotAvailable):
 		code = "ffmpeg_not_available"
 		status = http.StatusServiceUnavailable
 		message = "ffmpeg tools are not available"

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"mime"
@@ -34,13 +35,14 @@ type Server struct {
 }
 
 type playResponse struct {
-	Mode            string  `json:"mode"`
-	URL             string  `json:"url"`
-	Mime            string  `json:"mime,omitempty"`
-	SessionID       string  `json:"session_id,omitempty"`
-	Profile         string  `json:"profile,omitempty"`
-	StartSeconds    float64 `json:"start_seconds,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds,omitempty"`
+	Mode            string                `json:"mode"`
+	URL             string                `json:"url"`
+	Mime            string                `json:"mime,omitempty"`
+	SessionID       string                `json:"session_id,omitempty"`
+	Profile         string                `json:"profile,omitempty"`
+	StartSeconds    float64               `json:"start_seconds,omitempty"`
+	DurationSeconds float64               `json:"duration_seconds,omitempty"`
+	Subtitles       []media.SubtitleTrack `json:"subtitles,omitempty"`
 }
 
 func NewServer(fileService *filesystem.Service, mediaService *media.Service, thumbnailService *thumbnail.Service, transcodeManager *transcode.Manager, password string) *Server {
@@ -63,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/thumbnail", s.thumbnailHandler)
 	mux.HandleFunc("GET /api/download", s.downloadHandler)
 	mux.HandleFunc("GET /api/video/info", s.videoInfoHandler)
+	mux.HandleFunc("GET /api/video/subtitle", s.videoSubtitleHandler)
 	mux.HandleFunc("GET /api/video/playback-options", s.videoPlaybackOptionsHandler)
 	mux.HandleFunc("GET /api/video/play", s.videoPlayHandler)
 	mux.HandleFunc("DELETE /api/video/session/{session}", s.videoStopHandler)
@@ -223,6 +226,39 @@ func (s *Server) videoInfoHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, info)
 }
 
+func (s *Server) videoSubtitleHandler(w http.ResponseWriter, r *http.Request) {
+	root, path, err := parseQuery(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	trackIndex, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("track")))
+	if err != nil || trackIndex < 0 {
+		writeError(w, errBadRequest)
+		return
+	}
+	resolved, info, err := s.mediaInfo(r.Context(), root, path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	track, ok := subtitleTrack(info, trackIndex)
+	if !ok {
+		writeError(w, fs.ErrNotExist)
+		return
+	}
+
+	content, err := s.mediaService.ExtractSubtitle(r.Context(), resolved.AbsPath, track)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
+}
+
 func (s *Server) videoPlaybackOptionsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, s.transcodeManager.PlaybackOptions())
 }
@@ -295,6 +331,7 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 		Profile:         session.ProfileName,
 		StartSeconds:    session.StartSeconds,
 		DurationSeconds: info.Container.Duration,
+		Subtitles:       info.Tracks.Subtitle,
 	})
 }
 
@@ -307,7 +344,17 @@ func (s *Server) writeDirectPlay(w http.ResponseWriter, root, path string, resol
 		Profile:         profileName,
 		StartSeconds:    startSeconds,
 		DurationSeconds: info.Container.Duration,
+		Subtitles:       info.Tracks.Subtitle,
 	})
+}
+
+func subtitleTrack(info *media.MediaInfo, index int) (media.SubtitleTrack, bool) {
+	for _, track := range info.Tracks.Subtitle {
+		if track.Index == index {
+			return track, true
+		}
+	}
+	return media.SubtitleTrack{}, false
 }
 
 func (s *Server) videoStopHandler(w http.ResponseWriter, r *http.Request) {

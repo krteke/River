@@ -17,16 +17,22 @@ import (
 )
 
 const defaultProbeTimeout = 30 * time.Second
+const defaultSubtitleTimeout = 30 * time.Second
+const maxSubtitleOutputSize = 10 << 20
 
 var ErrFFprobeNotAvailable = errors.New("ffprobe not available")
+var ErrFFmpegNotAvailable = errors.New("ffmpeg not available")
+var ErrUnsupportedSubtitle = errors.New("subtitle format is not supported")
+var ErrSubtitleTooLarge = errors.New("subtitle is too large")
 
 type Service struct {
 	ffprobePath string
+	ffmpegPath  string
 	playback    config.PlaybackConfig
 }
 
-func NewService(ffprobePath string, playback config.PlaybackConfig) *Service {
-	return &Service{ffprobePath: ffprobePath, playback: playback}
+func NewService(ffprobePath, ffmpegPath string, playback config.PlaybackConfig) *Service {
+	return &Service{ffprobePath: ffprobePath, ffmpegPath: ffmpegPath, playback: playback}
 }
 
 func (s *Service) Probe(ctx context.Context, filePath string) (*MediaInfo, error) {
@@ -38,6 +44,60 @@ func (s *Service) Probe(ctx context.Context, filePath string) (*MediaInfo, error
 	info := normalize(raw)
 
 	return &info, nil
+}
+
+// ExtractSubtitle converts a text subtitle stream to WebVTT for the client player.
+// Bitmap subtitles require video rendering and are intentionally not converted here.
+func (s *Service) ExtractSubtitle(ctx context.Context, filePath string, track SubtitleTrack) ([]byte, error) {
+	if !track.Text {
+		return nil, ErrUnsupportedSubtitle
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, defaultSubtitleTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, s.ffmpegPath,
+		"-hide_banner",
+		"-v", "error",
+		"-nostdin",
+		"-i", filePath,
+		"-map", fmt.Sprintf("0:%d", track.Index),
+		"-c:s", "webvtt",
+		"-f", "webvtt",
+		"pipe:1",
+	)
+
+	var stdout limitedBuffer
+	stdout.limit = maxSubtitleOutputSize
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if stdout.exceeded {
+			return nil, ErrSubtitleTooLarge
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("subtitle extraction timeout after %s for %q: %w", defaultSubtitleTimeout, filepath.Base(filePath), ctx.Err())
+		}
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", ErrFFmpegNotAvailable, err)
+		}
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return nil, fmt.Errorf("extract subtitle from %q: %w: %s", filepath.Base(filePath), err, errMsg)
+	}
+	if stdout.exceeded {
+		return nil, ErrSubtitleTooLarge
+	}
+	if stdout.Len() == 0 {
+		return nil, fmt.Errorf("subtitle extraction returned empty output for %q", filepath.Base(filePath))
+	}
+
+	return stdout.Bytes(), nil
 }
 
 func (s *Service) probeRaw(ctx context.Context, filePath string) (ffprobeOutput, error) {
@@ -155,6 +215,7 @@ func normalize(raw ffprobeOutput) MediaInfo {
 		case "subtitle":
 			media.Tracks.Subtitle = append(media.Tracks.Subtitle, SubtitleTrack{
 				TrackBase: base,
+				Text:      textSubtitleCodec(stream.CodecName),
 			})
 		default:
 			media.Tracks.Other = append(media.Tracks.Other, base)
@@ -162,6 +223,29 @@ func normalize(raw ffprobeOutput) MediaInfo {
 	}
 
 	return media
+}
+
+func textSubtitleCodec(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "ass", "ssa", "subrip", "srt", "webvtt", "mov_text", "text", "tx3g":
+		return true
+	default:
+		return false
+	}
+}
+
+type limitedBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > b.limit {
+		b.exceeded = true
+		return len(p), nil
+	}
+	return b.Buffer.Write(p)
 }
 
 func trackBaseFromFFProbe(stream ffprobeStream) TrackBase {

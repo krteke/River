@@ -92,6 +92,49 @@ void main() {
     expect(engine.rate, 1.5);
   });
 
+  test(
+    'loads the default embedded text subtitle and can turn it off',
+    () async {
+      const subtitle = EmbeddedSubtitle(
+        index: 2,
+        codec: 'subrip',
+        text: true,
+        language: 'jpn',
+        title: 'Japanese',
+        isDefault: true,
+      );
+      final api = _FakePlaybackApi(
+        responses: [
+          const PlayResponse(
+            mode: 'hls',
+            url: '/stream/session/master.m3u8',
+            sessionId: 'session',
+            subtitles: [subtitle],
+          ),
+        ],
+      );
+      final engine = _FakePlaybackEngine();
+      final controller = VideoPlaybackController(
+        api: api,
+        root: 'media',
+        path: '/movie.mkv',
+        playbackEngine: engine,
+      );
+
+      await controller.initialize();
+
+      expect(controller.selectedSubtitle, subtitle);
+      expect(api.subtitleTracks, [2]);
+      expect(engine.subtitle, startsWith('WEBVTT'));
+
+      await controller.selectSubtitle(null);
+      controller.dispose();
+
+      expect(controller.selectedSubtitle, isNull);
+      expect(engine.subtitle, isNull);
+    },
+  );
+
   test('does not add a client start offset for HLS sessions', () async {
     final api = _FakePlaybackApi(
       responses: [
@@ -242,6 +285,7 @@ class _FakePlaybackApi implements VideoPlaybackApi {
   final List<PlaybackOption> _options;
   final List<_PlayCall> calls = [];
   final List<String> stoppedSessions = [];
+  final List<int> subtitleTracks = [];
 
   @override
   Map<String, String>? get authHeaders => {'X-River-Password': 'secret'};
@@ -278,6 +322,12 @@ class _FakePlaybackApi implements VideoPlaybackApi {
   Future<List<PlaybackOption>> getPlaybackOptions() async => _options;
 
   @override
+  Future<String> getSubtitle(String root, String path, int trackIndex) async {
+    subtitleTracks.add(trackIndex);
+    return 'WEBVTT\n\n00:00.000 --> 00:01.000\nSubtitle\n';
+  }
+
+  @override
   Future<void> stopSession(String sessionId) async {
     stoppedSessions.add(sessionId);
   }
@@ -294,6 +344,7 @@ class _FakePlaybackEngine implements PlaybackEngine {
   Duration? seekedPosition;
   bool _playing = true;
   double rate = 1;
+  String? subtitle;
 
   @override
   VideoController get videoController => throw UnsupportedError(
@@ -343,6 +394,22 @@ class _FakePlaybackEngine implements PlaybackEngine {
   Future<void> setRate(double rate) async {
     calls.add('setRate');
     this.rate = rate;
+  }
+
+  @override
+  Future<void> setSubtitle(
+    String content, {
+    String? title,
+    String? language,
+  }) async {
+    calls.add('setSubtitle');
+    subtitle = content;
+  }
+
+  @override
+  Future<void> clearSubtitle() async {
+    calls.add('clearSubtitle');
+    subtitle = null;
   }
 
   void emitPosition(Duration position) {

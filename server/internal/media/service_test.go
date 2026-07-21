@@ -7,7 +7,7 @@ import (
 )
 
 func TestPlaybackInfoDirectPlay(t *testing.T) {
-	service := NewService("ffprobe", config.PlaybackConfig{
+	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{
 		DirectPlayMaxBitrate: 12_000_000,
 		DirectPlayMaxWidth:   1920,
 		DirectPlayMaxHeight:  1080,
@@ -24,7 +24,7 @@ func TestPlaybackInfoDirectPlay(t *testing.T) {
 }
 
 func TestPlaybackInfoTranscodesIncompatibleMedia(t *testing.T) {
-	service := NewService("ffprobe", config.PlaybackConfig{
+	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{
 		DirectPlayMaxBitrate: 12_000_000,
 		DirectPlayMaxWidth:   1920,
 		DirectPlayMaxHeight:  1080,
@@ -52,12 +52,29 @@ func TestPlaybackInfoTranscodesIncompatibleMedia(t *testing.T) {
 }
 
 func TestPlaybackInfoRejectsMediaWithoutVideo(t *testing.T) {
-	service := NewService("ffprobe", config.PlaybackConfig{})
+	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{})
 	info := playableMediaInfo()
 	info.Tracks.Video = nil
 
 	if got := service.PlaybackInfo(&info).Mode; got != PlaybackModeUnsupported {
 		t.Fatalf("expected unsupported, got %q", got)
+	}
+}
+
+func TestNormalizeClassifiesTextAndBitmapSubtitles(t *testing.T) {
+	info := normalize(ffprobeOutput{Streams: []ffprobeStream{
+		{Index: 2, CodecName: "subrip", CodecType: "subtitle"},
+		{Index: 3, CodecName: "hdmv_pgs_subtitle", CodecType: "subtitle"},
+	}})
+
+	if len(info.Tracks.Subtitle) != 2 {
+		t.Fatalf("unexpected subtitle tracks: %+v", info.Tracks.Subtitle)
+	}
+	if !info.Tracks.Subtitle[0].Text {
+		t.Fatal("expected SubRip to be a text subtitle")
+	}
+	if info.Tracks.Subtitle[1].Text {
+		t.Fatal("expected PGS to be a bitmap subtitle")
 	}
 }
 

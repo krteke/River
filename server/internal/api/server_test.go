@@ -90,6 +90,32 @@ func TestVideoPlaybackOptions(t *testing.T) {
 	}
 }
 
+func TestVideoSubtitleExportsTextTrack(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/subtitle?root=media&path=/movie.mkv&track=2")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/vtt; charset=utf-8" {
+		t.Fatalf("unexpected content type: %q", got)
+	}
+	if got := response.Body.String(); got != "WEBVTT\n\n00:00.000 --> 00:01.000\nSubtitle\n" {
+		t.Fatalf("unexpected subtitle output: %q", got)
+	}
+}
+
+func TestVideoSubtitleRejectsUnknownTrack(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/subtitle?root=media&path=/movie.mkv&track=9")
+	assertAPIError(t, response, http.StatusNotFound, "not_found")
+}
+
 func TestVideoPlayOriginalProfile(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
@@ -119,7 +145,7 @@ func TestVideoPlayDefaultOriginalProfile(t *testing.T) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler()
+	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler()
 
 	response := request(t, handler, "/api/video/play?root=media&path=/movie.mkv")
 	if response.Code != http.StatusOK {
@@ -219,7 +245,7 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
+	missingProbeHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingProbeHandler, "/api/video/info?root=media&path=/movie.mp4")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
 
@@ -230,7 +256,7 @@ func TestVideoPlayValidationAndToolErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
+	missingFFmpegHandler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), transcode.NewManager(cfg), "").Handler()
 	response = request(t, missingFFmpegHandler, "/api/video/play?root=media&path=/movie.mkv")
 	assertAPIError(t, response, http.StatusServiceUnavailable, "ffmpeg_not_available")
 }
@@ -245,7 +271,7 @@ func TestPasswordAuthentication(t *testing.T) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "secret").Handler()
+	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "secret").Handler()
 
 	response := request(t, handler, "/api/health")
 	assertAPIError(t, response, http.StatusUnauthorized, "unauthorized")
@@ -311,7 +337,7 @@ func testHandler(t *testing.T, root string) (http.Handler, *transcode.Manager) {
 	}
 	manager := transcode.NewManager(cfg)
 	t.Cleanup(manager.StopAll)
-	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler(), manager
+	return NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler(), manager
 }
 
 func testConfig(t *testing.T, root string) *config.Config {
@@ -335,7 +361,11 @@ case "$last" in
 *.mp4) container='mov,mp4,m4a,3gp,3g2,mj2'; codec='h264' ;;
 *) container='matroska,webm'; codec='hevc' ;;
 esac
-printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"8000000","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$codec"
+if [ "$codec" = 'hevc' ]; then
+  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"8000000","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2},{"index":2,"codec_name":"subrip","codec_type":"subtitle","disposition":{"default":1},"tags":{"language":"jpn","title":"Japanese"}}]}' "$container" "$codec"
+else
+  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"8000000","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$codec"
+fi
 `
 	mustWriteExecutable(t, path, script)
 	return path
@@ -349,6 +379,10 @@ case "$*" in
 *"-frames:v 1"*)
   for last do :; done
   printf 'thumbnail' > "$last"
+  exit 0
+  ;;
+*"-f webvtt pipe:1"*)
+  printf 'WEBVTT\n\n00:00.000 --> 00:01.000\nSubtitle\n'
   exit 0
   ;;
 esac
