@@ -6,57 +6,84 @@ import (
 	"github.com/krteke/River/internal/config"
 )
 
-func TestPlaybackInfoDirectPlay(t *testing.T) {
+func TestPlaybackModeDirectsLowBitrateAV1(t *testing.T) {
 	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{
 		DirectPlayMaxBitrate: 12_000_000,
-		DirectPlayMaxWidth:   1920,
-		DirectPlayMaxHeight:  1080,
 	})
 	info := playableMediaInfo()
+	info.Container.Name = "matroska,webm"
+	info.Container.BitRate = 4_000_000
+	info.Tracks.Video[0].Codec = "av1"
+	info.Tracks.Video[0].Width = 3840
+	info.Tracks.Video[0].Height = 2160
+	info.Tracks.Audio[0].Codec = "opus"
 
-	playback := service.PlaybackInfo(&info)
-	if playback.Mode != PlaybackModeDirect {
-		t.Fatalf("expected direct play, got %q", playback.Mode)
-	}
-	if playback.Direct == nil || playback.Direct.Mime != "video/mp4" {
-		t.Fatalf("unexpected direct play info: %+v", playback.Direct)
+	if got := service.PlaybackMode(&info); got != PlaybackModeDirect {
+		t.Fatalf("expected direct play, got %q", got)
 	}
 }
 
-func TestPlaybackInfoTranscodesIncompatibleMedia(t *testing.T) {
+func TestPlaybackModeUsesEffectiveBitrate(t *testing.T) {
 	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{
 		DirectPlayMaxBitrate: 12_000_000,
-		DirectPlayMaxWidth:   1920,
-		DirectPlayMaxHeight:  1080,
 	})
 
-	tests := map[string]func(*MediaInfo){
-		"container":  func(info *MediaInfo) { info.Container.Name = "matroska,webm" },
-		"codec":      func(info *MediaInfo) { info.Tracks.Video[0].Codec = "hevc" },
-		"width":      func(info *MediaInfo) { info.Tracks.Video[0].Width = 3840 },
-		"height":     func(info *MediaInfo) { info.Tracks.Video[0].Height = 2160 },
-		"audio":      func(info *MediaInfo) { info.Tracks.Audio[0].Codec = "opus" },
-		"bitrate":    func(info *MediaInfo) { info.Container.BitRate = 13_000_000 },
-		"unknownBit": func(info *MediaInfo) { info.Container.BitRate = 0 },
+	tests := map[string]struct {
+		change func(*MediaInfo)
+		want   PlaybackMode
+	}{
+		"at threshold": {
+			change: func(info *MediaInfo) { info.Container.BitRate = 12_000_000 },
+			want:   PlaybackModeDirect,
+		},
+		"above threshold": {
+			change: func(info *MediaInfo) { info.Container.BitRate = 12_000_001 },
+			want:   PlaybackModeTranscode,
+		},
+		"estimated below threshold": {
+			change: func(info *MediaInfo) {
+				info.Container.BitRate = 0
+				info.Container.Size = 45_000_000
+				info.Container.Duration = 60
+			},
+			want: PlaybackModeDirect,
+		},
+		"estimated above threshold": {
+			change: func(info *MediaInfo) {
+				info.Container.BitRate = 0
+				info.Container.Size = 100_000_000
+				info.Container.Duration = 60
+			},
+			want: PlaybackModeTranscode,
+		},
+		"unknown bitrate": {
+			change: func(info *MediaInfo) {
+				info.Container.BitRate = 0
+				info.Container.Size = 0
+				info.Container.Duration = 0
+			},
+			want: PlaybackModeDirect,
+		},
 	}
 
-	for name, change := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			info := playableMediaInfo()
-			change(&info)
-			if got := service.PlaybackInfo(&info).Mode; got != PlaybackModeTranscode {
-				t.Fatalf("expected transcode, got %q", got)
+			info.Tracks.Video[0].Codec = "av1"
+			test.change(&info)
+			if got := service.PlaybackMode(&info); got != test.want {
+				t.Fatalf("unexpected playback mode: got %q want %q", got, test.want)
 			}
 		})
 	}
 }
 
-func TestPlaybackInfoRejectsMediaWithoutVideo(t *testing.T) {
+func TestPlaybackModeRejectsMediaWithoutVideo(t *testing.T) {
 	service := NewService("ffprobe", "ffmpeg", config.PlaybackConfig{})
 	info := playableMediaInfo()
 	info.Tracks.Video = nil
 
-	if got := service.PlaybackInfo(&info).Mode; got != PlaybackModeUnsupported {
+	if got := service.PlaybackMode(&info); got != PlaybackModeUnsupported {
 		t.Fatalf("expected unsupported, got %q", got)
 	}
 }

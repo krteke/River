@@ -276,7 +276,7 @@ void main() {
   });
 
   test(
-    'uses backend playback options and restarts playback when changed',
+    'starts in automatic mode and restarts with an explicit option',
     () async {
       const options = [
         PlaybackOption(
@@ -328,7 +328,7 @@ void main() {
       await controller.selectPlaybackOption(options.last);
       controller.dispose();
 
-      expect(api.calls.first.profile, '1080p_8m');
+      expect(api.calls.first.profile, isNull);
       expect(api.calls.last.profile, 'original');
       expect(api.calls.last.startSeconds, 30);
       expect(api.calls.last.replaceSessionId, 'session-a');
@@ -336,6 +336,50 @@ void main() {
       expect(controller.selectedPlaybackOption?.name, 'original');
     },
   );
+
+  test('maps an automatic direct response to the original option', () async {
+    const options = [
+      PlaybackOption(
+        name: '1080p_8m',
+        label: 'h264 / 1080p / 8000k',
+        direct: false,
+        isDefault: true,
+        codec: 'h264',
+        resolution: '1080p',
+        bitrate: '8000k',
+      ),
+      PlaybackOption(
+        name: 'original',
+        label: '原画',
+        direct: true,
+        isDefault: false,
+      ),
+    ];
+    final api = _FakePlaybackApi(
+      options: options,
+      responses: [
+        const PlayResponse(
+          mode: 'direct',
+          url: '/api/file?root=media&path=/movie.webm',
+          durationSeconds: 120,
+        ),
+      ],
+    );
+    final engine = _FakePlaybackEngine();
+    final controller = VideoPlaybackController(
+      api: api,
+      root: 'media',
+      path: '/movie.webm',
+      playbackEngine: engine,
+    );
+
+    await controller.initialize();
+    controller.dispose();
+
+    expect(api.calls.single.profile, isNull);
+    expect(controller.selectedPlaybackOption?.name, 'original');
+    expect(controller.playResponse?.isHls, isFalse);
+  });
 }
 
 class _FakePlaybackApi implements VideoPlaybackApi {

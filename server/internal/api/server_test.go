@@ -134,20 +134,12 @@ func TestVideoPlayOriginalProfile(t *testing.T) {
 	}
 }
 
-func TestVideoPlayDefaultOriginalProfile(t *testing.T) {
+func TestVideoPlayAutoDirectsLowBitrateAV1(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "movie.mkv"), []byte("video"))
-	cfg := testConfig(t, root)
-	cfg.Playback.DefaultProfile = "original"
-	fileService, err := filesystem.NewService(cfg.Roots)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := transcode.NewManager(cfg)
-	t.Cleanup(manager.StopAll)
-	handler := NewServer(fileService, media.NewService(cfg.FFmpeg.FFprobePath, cfg.FFmpeg.FFmpegPath, cfg.Playback), thumbnail.NewService(cfg.FFmpeg.FFmpegPath, cfg.Thumbnail), manager, "").Handler()
+	mustWrite(t, filepath.Join(root, "movie.webm"), []byte("video"))
+	handler, _ := testHandler(t, root)
 
-	response := request(t, handler, "/api/video/play?root=media&path=/movie.mkv")
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.webm")
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
 	}
@@ -155,17 +147,17 @@ func TestVideoPlayDefaultOriginalProfile(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Mode != "direct" || body.Profile != "original" {
-		t.Fatalf("unexpected default original response: %+v", body)
+	if body.Mode != "direct" || body.Profile != "" || body.URL != "/api/file?path=%2Fmovie.webm&root=media" {
+		t.Fatalf("unexpected automatic direct response: %+v", body)
 	}
 }
 
 func TestVideoPlaySelectedTranscodeProfileForcesHLS(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, filepath.Join(root, "movie.mp4"), []byte("video"))
+	mustWrite(t, filepath.Join(root, "movie.webm"), []byte("video"))
 	handler, _ := testHandler(t, root)
 
-	response := request(t, handler, "/api/video/play?root=media&path=/movie.mp4&profile=1080p_8m")
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.webm&profile=1080p_8m")
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", response.Code, response.Body.String())
 	}
@@ -191,7 +183,7 @@ func TestVideoPlayHLSAndServeStream(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Mode != "hls" || body.SessionID == "" || body.DurationSeconds != 60 {
+	if body.Mode != "hls" || body.Profile != "1080p_8m" || body.SessionID == "" || body.DurationSeconds != 60 {
 		t.Fatalf("unexpected HLS response: %+v", body)
 	}
 
@@ -358,13 +350,14 @@ func fakeFFprobe(t *testing.T) string {
 	script := `#!/bin/sh
 for last do :; done
 case "$last" in
-*.mp4) container='mov,mp4,m4a,3gp,3g2,mj2'; codec='h264' ;;
-*) container='matroska,webm'; codec='hevc' ;;
+*.mp4) container='mov,mp4,m4a,3gp,3g2,mj2'; codec='h264'; bitrate='8000000' ;;
+*.webm) container='matroska,webm'; codec='av1'; bitrate='4000000' ;;
+*) container='matroska,webm'; codec='av1'; bitrate='16000000' ;;
 esac
-if [ "$codec" = 'hevc' ]; then
-  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"8000000","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2},{"index":2,"codec_name":"subrip","codec_type":"subtitle","disposition":{"default":1},"tags":{"language":"jpn","title":"Japanese"}}]}' "$container" "$codec"
+if [ "$codec" != 'h264' ]; then
+  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"%s","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2},{"index":2,"codec_name":"subrip","codec_type":"subtitle","disposition":{"default":1},"tags":{"language":"jpn","title":"Japanese"}}]}' "$container" "$bitrate" "$codec"
 else
-  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"8000000","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$codec"
+  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"%s","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$bitrate" "$codec"
 fi
 `
 	mustWriteExecutable(t, path, script)

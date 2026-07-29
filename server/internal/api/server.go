@@ -295,18 +295,15 @@ func (s *Server) videoPlayHandler(w http.ResponseWriter, r *http.Request) {
 			s.writeDirectPlay(w, root, path, resolved, info, startSeconds, profile.Name)
 			return
 		}
-	} else if profile, ok := s.transcodeManager.Profile(""); ok && profile.Direct {
-		s.writeDirectPlay(w, root, path, resolved, info, startSeconds, profile.Name)
-		return
 	}
 
-	playback := s.mediaService.PlaybackInfo(info)
+	playbackMode := s.mediaService.PlaybackMode(info)
 
-	if profileName == "" && playback.Mode == media.PlaybackModeDirect {
+	if profileName == "" && playbackMode == media.PlaybackModeDirect {
 		s.writeDirectPlay(w, root, path, resolved, info, startSeconds, "")
 		return
 	}
-	if playback.Mode == media.PlaybackModeUnsupported {
+	if playbackMode == media.PlaybackModeUnsupported {
 		writeError(w, errUnsupportedFileType)
 		return
 	}

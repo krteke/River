@@ -39,9 +39,9 @@ max_size_mb = 512
 cleanup_interval_seconds = 3600
 
 [playback]
+# 自动播放时，源文件码率不超过该值则播放原画；超过后使用 default_profile 转码。
 direct_play_max_bitrate = 12000000
-direct_play_max_width = 1920
-direct_play_max_height = 1080
+# 必须指向下方某个非 direct 的转码预设。
 default_profile = "1080p_8m"
 
 [[profiles]]

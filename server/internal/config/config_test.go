@@ -16,14 +16,34 @@ func TestValidateRequiresConfiguredDefaultProfile(t *testing.T) {
 	}
 }
 
-func TestValidateAllowsDirectProfileWithoutTranscodeSettings(t *testing.T) {
+func TestValidateRejectsDirectDefaultProfile(t *testing.T) {
 	cfg := Default()
 	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
 	cfg.Playback.DefaultProfile = "original"
-	cfg.Profiles = []ProfileConfig{{Name: "original", Direct: true}}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "transcode profile") {
+		t.Fatalf("expected direct default profile validation error, got %v", err)
+	}
+}
+
+func TestValidateAllowsDirectProfileWithoutTranscodeSettings(t *testing.T) {
+	cfg := Default()
+	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected direct profile to validate, got %v", err)
+	}
+}
+
+func TestValidateRequiresDirectProfile(t *testing.T) {
+	cfg := Default()
+	cfg.Roots = []RootConfig{{ID: "media", Path: t.TempDir()}}
+	cfg.Profiles = cfg.Profiles[1:]
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "direct profile") {
+		t.Fatalf("expected direct profile validation error, got %v", err)
 	}
 }
 

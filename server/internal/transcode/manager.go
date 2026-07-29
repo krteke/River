@@ -434,9 +434,6 @@ func buildFFmpegArgsForAttempt(cfg *config.Config, profile config.ProfileConfig,
 		segmentDuration = cfg.Transcode.SegmentDurationSeconds
 	}
 	width := profile.Width
-	if width <= 0 {
-		width = cfg.Playback.DirectPlayMaxWidth
-	}
 	preset := profile.Preset
 	if preset == "" {
 		preset = "veryfast"

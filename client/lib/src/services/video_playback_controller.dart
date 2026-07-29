@@ -92,12 +92,8 @@ class VideoPlaybackController extends ChangeNotifier {
     notifyListeners();
     try {
       playbackOptions = await api.getPlaybackOptions();
-      selectedPlaybackOption = _initialPlaybackOption(playbackOptions);
-      final response = await api.playVideo(
-        root,
-        path,
-        profile: selectedPlaybackOption?.name,
-      );
+      selectedPlaybackOption = null;
+      final response = await api.playVideo(root, path);
       if (_disposed) {
         if (response.sessionId case final sessionId?) {
           await api.stopSession(sessionId);
@@ -462,18 +458,6 @@ class VideoPlaybackController extends ChangeNotifier {
       title: subtitle.title,
       language: subtitle.language,
     );
-  }
-
-  PlaybackOption? _initialPlaybackOption(List<PlaybackOption> options) {
-    if (options.isEmpty) {
-      return null;
-    }
-    for (final option in options) {
-      if (option.isDefault) {
-        return option;
-      }
-    }
-    return options.first;
   }
 
   PlaybackOption? _optionForResponse(PlayResponse? response) {

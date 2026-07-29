@@ -146,29 +146,27 @@ func (s *Service) probeRaw(ctx context.Context, filePath string) (ffprobeOutput,
 	return raw, nil
 }
 
-func (s *Service) PlaybackInfo(info *MediaInfo) PlaybackInfo {
+func (s *Service) PlaybackMode(info *MediaInfo) PlaybackMode {
 	if len(info.Tracks.Video) == 0 {
-		return PlaybackInfo{
-			Mode:        PlaybackModeUnsupported,
-			Unsupported: &UnsupportedInfo{Message: "media has no video track"},
-		}
-	}
-	if directPlayContainer(info.Container.Name) &&
-		videoDirectPlay(info, s.playback.DirectPlayMaxWidth, s.playback.DirectPlayMaxHeight) &&
-		audioDirectPlay(info) &&
-		info.Container.BitRate > 0 &&
-		info.Container.BitRate <= s.playback.DirectPlayMaxBitrate {
-		return PlaybackInfo{Mode: PlaybackModeDirect, Direct: &DirectPlayInfo{Mime: "video/mp4"}}
+		return PlaybackModeUnsupported
 	}
 
-	return PlaybackInfo{
-		Mode: PlaybackModeTranscode,
-		TransCode: &TranscodeInfo{
-			TargetContainer: "hls",
-			VideoCodec:      "h264",
-			AudioCodec:      "aac",
-		},
+	bitRate := effectiveBitRate(info)
+	if bitRate <= 0 || bitRate <= float64(s.playback.DirectPlayMaxBitrate) {
+		return PlaybackModeDirect
 	}
+
+	return PlaybackModeTranscode
+}
+
+func effectiveBitRate(info *MediaInfo) float64 {
+	if info.Container.BitRate > 0 {
+		return float64(info.Container.BitRate)
+	}
+	if info.Container.Size <= 0 || info.Container.Duration <= 0 {
+		return 0
+	}
+	return float64(info.Container.Size) * 8 / info.Container.Duration
 }
 
 func normalize(raw ffprobeOutput) MediaInfo {
@@ -300,38 +298,4 @@ func parseRational(value string) *Rational {
 	r.Den = parseInt64(strings.TrimSpace(parts[1]))
 
 	return r
-}
-
-func directPlayContainer(container string) bool {
-	for _, name := range strings.Split(strings.ToLower(container), ",") {
-		switch strings.TrimSpace(name) {
-		case "mp4", "mov":
-			return true
-		}
-	}
-	return false
-}
-
-func videoDirectPlay(info *MediaInfo, maxWidth, maxHeight int) bool {
-	if len(info.Tracks.Video) == 0 {
-		return false
-	}
-	for _, video := range info.Tracks.Video {
-		if strings.ToLower(video.Codec) != "h264" || video.Width <= 0 || video.Height <= 0 || video.Width > maxWidth || video.Height > maxHeight {
-			return false
-		}
-	}
-
-	return true
-}
-
-func audioDirectPlay(info *MediaInfo) bool {
-	for _, audio := range info.Tracks.Audio {
-		switch strings.ToLower(audio.Codec) {
-		case "aac", "mp3":
-		default:
-			return false
-		}
-	}
-	return true
 }

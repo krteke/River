@@ -63,8 +63,6 @@ type ThumbnailConfig struct {
 
 type PlaybackConfig struct {
 	DirectPlayMaxBitrate int64  `toml:"direct_play_max_bitrate"`
-	DirectPlayMaxWidth   int    `toml:"direct_play_max_width"`
-	DirectPlayMaxHeight  int    `toml:"direct_play_max_height"`
 	DefaultProfile       string `toml:"default_profile"`
 }
 
@@ -120,9 +118,7 @@ func Default() Config {
 			CleanupIntervalSeconds: 60 * 60,
 		},
 		Playback: PlaybackConfig{
-			DirectPlayMaxBitrate: 8_000_000,
-			DirectPlayMaxWidth:   1920,
-			DirectPlayMaxHeight:  1080,
+			DirectPlayMaxBitrate: 12_000_000,
 			DefaultProfile:       "1080p_8m",
 		},
 		Profiles: []ProfileConfig{
@@ -225,12 +221,6 @@ func (c Config) Validate() error {
 	if c.Playback.DirectPlayMaxBitrate <= 0 {
 		return errors.New("playback.direct_play_max_bitrate must be greater than 0")
 	}
-	if c.Playback.DirectPlayMaxWidth <= 0 {
-		return errors.New("playback.direct_play_max_width must be greater than 0")
-	}
-	if c.Playback.DirectPlayMaxHeight <= 0 {
-		return errors.New("playback.direct_play_max_height must be greater than 0")
-	}
 	if c.Playback.DefaultProfile == "" {
 		return errors.New("playback.default_profile is required")
 	}
@@ -252,7 +242,8 @@ func (c Config) Validate() error {
 		seenRoots[root.ID] = struct{}{}
 	}
 
-	profiles := make(map[string]struct{}, len(c.Profiles))
+	profiles := make(map[string]bool, len(c.Profiles))
+	hasDirectProfile := false
 	for _, profile := range c.Profiles {
 		if profile.Name == "" {
 			return errors.New("profile.name is required")
@@ -261,7 +252,8 @@ func (c Config) Validate() error {
 			return errors.New("duplicate profile name: " + profile.Name)
 		}
 		if profile.Direct {
-			profiles[profile.Name] = struct{}{}
+			hasDirectProfile = true
+			profiles[profile.Name] = true
 			continue
 		}
 		if profile.Container == "" {
@@ -291,10 +283,17 @@ func (c Config) Validate() error {
 		if profile.SegmentDuration <= 0 {
 			return errors.New("profile.segment_duration must be greater than 0")
 		}
-		profiles[profile.Name] = struct{}{}
+		profiles[profile.Name] = false
 	}
-	if _, ok := profiles[c.Playback.DefaultProfile]; !ok {
+	defaultIsDirect, ok := profiles[c.Playback.DefaultProfile]
+	if !ok {
 		return errors.New("playback.default_profile does not match a configured profile")
+	}
+	if defaultIsDirect {
+		return errors.New("playback.default_profile must reference a transcode profile")
+	}
+	if !hasDirectProfile {
+		return errors.New("at least one direct profile is required")
 	}
 
 	return nil
