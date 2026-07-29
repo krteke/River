@@ -84,8 +84,6 @@ class VideoPlaybackController extends ChangeNotifier {
   bool get hasSubtitleChoices => usesNativeSubtitleTracks
       ? nativeSubtitles.isNotEmpty
       : subtitles.isNotEmpty;
-  String get originalFileUrl => api.originalFileUrl(root, path);
-  Map<String, String> get originalRequestHeaders => api.authHeaders ?? const {};
 
   Future<void> initialize() async {
     loading = true;

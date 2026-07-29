@@ -15,8 +15,6 @@ class RiverApiException implements Exception {
 abstract interface class VideoPlaybackApi {
   String absoluteUrl(String path);
 
-  String originalFileUrl(String root, String path);
-
   Map<String, String>? get authHeaders;
 
   Future<PlayResponse> playVideo(
@@ -86,7 +84,6 @@ class RiverApi implements VideoPlaybackApi {
     ).replace(queryParameters: {'root': root, 'path': path}).toString();
   }
 
-  @override
   String originalFileUrl(String root, String path) => fileUrl(root, path);
 
   Future<void> checkHealth() async {

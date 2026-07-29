@@ -407,11 +407,6 @@ class _FakePlaybackApi implements VideoPlaybackApi {
   }
 
   @override
-  String originalFileUrl(String root, String path) {
-    return 'http://river.test/api/file?root=$root&path=$path';
-  }
-
-  @override
   Future<PlayResponse> playVideo(
     String root,
     String path, {

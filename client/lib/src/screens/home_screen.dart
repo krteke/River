@@ -5,16 +5,23 @@ import '../controllers/theme_controller.dart';
 import '../models/file_models.dart';
 import '../models/server_profile.dart';
 import '../services/download_service.dart';
+import '../services/external_playback_service.dart';
 import '../services/river_api.dart';
 import '../widgets/file_preview.dart';
 import '../widgets/server_manager_dialog.dart';
 import '../widgets/video_player_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.controller, this.themeController});
+  const HomeScreen({
+    super.key,
+    this.controller,
+    this.themeController,
+    this.externalPlaybackService,
+  });
 
   final BrowserController? controller;
   final ThemeController? themeController;
+  final ExternalPlaybackService? externalPlaybackService;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -23,6 +30,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late final BrowserController _controller;
   late final bool _ownsController;
+  late final ExternalPlaybackService _externalPlaybackService;
   final DownloadService _downloadService = DownloadService();
   double? _downloadProgress;
 
@@ -31,6 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _ownsController = widget.controller == null;
     _controller = widget.controller ?? BrowserController();
+    _externalPlaybackService =
+        widget.externalPlaybackService ?? ExternalPlaybackService();
     _controller.initialize();
   }
 
@@ -269,6 +279,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       onDownload: entry.type == RiverFileType.directory
                           ? null
                           : () => _download(entry),
+                      onContextMenu: (position) =>
+                          _showEntryMenu(entry, position),
                     );
                   },
                 ),
@@ -435,6 +447,87 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _showEntryMenu(FileEntry entry, Offset globalPosition) async {
+    if (!mounted) {
+      return;
+    }
+    final overlay = Overlay.of(context).context.findRenderObject();
+    if (overlay is! RenderBox) {
+      return;
+    }
+    final action = await showMenu<_FileAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        if (entry.type != RiverFileType.directory)
+          const PopupMenuItem(
+            value: _FileAction.download,
+            child: ListTile(
+              leading: Icon(Icons.download_outlined),
+              title: Text('下载'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+        const PopupMenuItem(
+          value: _FileAction.open,
+          child: ListTile(
+            leading: Icon(Icons.open_in_new_rounded),
+            title: Text('打开'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        if (entry.type == RiverFileType.video)
+          const PopupMenuItem(
+            value: _FileAction.openExternally,
+            child: ListTile(
+              leading: Icon(Icons.play_circle_outline_rounded),
+              title: Text('使用外部播放器播放'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
+      ],
+    );
+    if (action == null || !mounted) {
+      return;
+    }
+    switch (action) {
+      case _FileAction.download:
+        await _download(entry);
+        break;
+      case _FileAction.open:
+        await _openEntry(entry);
+        break;
+      case _FileAction.openExternally:
+        await _openExternally(entry);
+        break;
+    }
+  }
+
+  Future<void> _openExternally(FileEntry entry) async {
+    final api = _controller.api;
+    final root = _controller.selectedRoot;
+    if (api == null || root == null || entry.type != RiverFileType.video) {
+      return;
+    }
+    try {
+      await _externalPlaybackService.openOriginal(
+        url: api.originalFileUrl(root.id, entry.path),
+        headers: api.authHeaders ?? const {},
+      );
+    } on ExternalPlaybackException catch (error) {
+      if (mounted) {
+        _showMessage(error.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        _showMessage('无法打开外部播放器');
+      }
+    }
+  }
+
   Future<void> _refresh() => _run(_controller.refresh);
 
   Future<void> _connect(ServerProfile server) {
@@ -485,6 +578,8 @@ class _SortChoice {
   @override
   int get hashCode => Object.hash(field, ascending);
 }
+
+enum _FileAction { download, open, openExternally }
 
 class _ThemeModeMenu extends StatelessWidget {
   const _ThemeModeMenu({required this.controller});
@@ -542,6 +637,7 @@ class _FileTile extends StatelessWidget {
     required this.selected,
     required this.api,
     required this.onTap,
+    required this.onContextMenu,
     this.onDownload,
   });
 
@@ -549,28 +645,33 @@ class _FileTile extends StatelessWidget {
   final bool selected;
   final RiverApi api;
   final VoidCallback onTap;
+  final ValueChanged<Offset> onContextMenu;
   final VoidCallback? onDownload;
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      selected: selected,
-      leading: _leading(context),
-      title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: entry.type == RiverFileType.directory
-          ? const Text('文件夹')
-          : Text(
-              '${formatBytes(entry.size)} · ${formatDate(entry.modifiedAt)}',
-            ),
-      trailing: onDownload == null
-          ? const Icon(Icons.chevron_right)
-          : IconButton(
-              tooltip: '下载',
-              onPressed: onDownload,
-              icon: const Icon(Icons.download_outlined),
-            ),
-      onTap: onTap,
-      onLongPress: onDownload,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (details) => onContextMenu(details.globalPosition),
+      onLongPressStart: (details) => onContextMenu(details.globalPosition),
+      child: ListTile(
+        selected: selected,
+        leading: _leading(context),
+        title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: entry.type == RiverFileType.directory
+            ? const Text('文件夹')
+            : Text(
+                '${formatBytes(entry.size)} · ${formatDate(entry.modifiedAt)}',
+              ),
+        trailing: onDownload == null
+            ? const Icon(Icons.chevron_right)
+            : IconButton(
+                tooltip: '下载',
+                onPressed: onDownload,
+                icon: const Icon(Icons.download_outlined),
+              ),
+        onTap: onTap,
+      ),
     );
   }
 

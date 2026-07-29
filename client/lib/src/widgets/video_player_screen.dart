@@ -6,7 +6,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/file_models.dart';
-import '../services/external_playback_service.dart';
 import '../services/river_api.dart';
 import '../services/video_playback_controller.dart';
 
@@ -33,8 +32,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   static const int _gestureMaxSeconds = 120;
 
   late final VideoPlaybackController _controller;
-  final ExternalPlaybackService _externalPlaybackService =
-      ExternalPlaybackService();
   Duration? _gestureBasePosition;
   Duration _gestureOffset = Duration.zero;
   double _gestureDelta = 0;
@@ -119,52 +116,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
   }
 
-  Future<void> _showPlaybackMenu(Offset globalPosition) async {
-    if (_controller.loading || !mounted) {
-      return;
-    }
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final action = await showMenu<_PlaybackAction>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
-        Offset.zero & overlay.size,
-      ),
-      items: const [
-        PopupMenuItem(
-          value: _PlaybackAction.openOriginalExternally,
-          child: ListTile(
-            leading: Icon(Icons.open_in_new_rounded),
-            title: Text('用外部播放器播放原画'),
-            contentPadding: EdgeInsets.zero,
-          ),
-        ),
-      ],
-    );
-    if (action == _PlaybackAction.openOriginalExternally) {
-      await _openOriginalExternally();
-    }
-  }
-
-  Future<void> _openOriginalExternally() async {
-    try {
-      await _externalPlaybackService.openOriginal(
-        url: _controller.originalFileUrl,
-        headers: _controller.originalRequestHeaders,
-      );
-      await _controller.stop();
-      if (mounted) {
-        await Navigator.of(context).maybePop();
-      }
-    } on ExternalPlaybackException catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(error.message)));
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -206,10 +157,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onTap: () {},
-                  onLongPressStart: (details) =>
-                      _showPlaybackMenu(details.globalPosition),
-                  onSecondaryTapDown: (details) =>
-                      _showPlaybackMenu(details.globalPosition),
                   onHorizontalDragStart: _handleSeekDragStart,
                   onHorizontalDragUpdate: _handleSeekDragUpdate,
                   onHorizontalDragEnd: _handleSeekDragEnd,
@@ -243,8 +190,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     );
   }
 }
-
-enum _PlaybackAction { openOriginalExternally }
 
 class _PlaybackErrorView extends StatelessWidget {
   const _PlaybackErrorView({
