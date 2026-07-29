@@ -45,10 +45,10 @@ func writeError(w http.ResponseWriter, err error) {
 		code = "not_found"
 		status = http.StatusNotFound
 		message = "requested path has the wrong type"
-	case errors.Is(err, filesystem.ErrNotVideo):
+	case errors.Is(err, media.ErrNoVideoStream):
 		code = "unsupported_file_type"
 		status = http.StatusUnsupportedMediaType
-		message = "file is not a supported video"
+		message = "file does not contain a video stream"
 	case errors.Is(err, filesystem.ErrNoThumbnail):
 		code = "unsupported_file_type"
 		status = http.StatusUnsupportedMediaType

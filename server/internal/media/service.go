@@ -22,6 +22,7 @@ const maxSubtitleOutputSize = 10 << 20
 
 var ErrFFprobeNotAvailable = errors.New("ffprobe not available")
 var ErrFFmpegNotAvailable = errors.New("ffmpeg not available")
+var ErrNoVideoStream = errors.New("media has no video stream")
 var ErrUnsupportedSubtitle = errors.New("subtitle format is not supported")
 var ErrSubtitleTooLarge = errors.New("subtitle is too large")
 

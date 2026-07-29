@@ -43,8 +43,12 @@ func TestPathClean(t *testing.T) {
 func TestListReturnsRelativePathsAndFileTypes(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "movie.mp4"), "video")
+	mustWriteFile(t, filepath.Join(root, "clip.m4v"), "video")
 	mustWriteFile(t, filepath.Join(root, "notes.md"), "text")
 	mustWriteFile(t, filepath.Join(root, "archive.bin"), "other")
+	if err := os.WriteFile(filepath.Join(root, "video.data"), m4vHeader(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(root, "folder"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +66,12 @@ func TestListReturnsRelativePathsAndFileTypes(t *testing.T) {
 	if got["movie.mp4"].Path != "/movie.mp4" || got["movie.mp4"].Type != filesystem.TypeVideo {
 		t.Fatalf("unexpected video item: %+v", got["movie.mp4"])
 	}
+	if got["clip.m4v"].Type != filesystem.TypeVideo {
+		t.Fatalf("unexpected M4V type: %q", got["clip.m4v"].Type)
+	}
+	if got["video.data"].Type != filesystem.TypeVideo {
+		t.Fatalf("content-detected video has type %q", got["video.data"].Type)
+	}
 	if got["notes.md"].Type != filesystem.TypeText {
 		t.Fatalf("unexpected text type: %q", got["notes.md"].Type)
 	}
@@ -70,6 +80,20 @@ func TestListReturnsRelativePathsAndFileTypes(t *testing.T) {
 	}
 	if got["folder"].Type != filesystem.TypeDirectory {
 		t.Fatalf("unexpected directory type: %q", got["folder"].Type)
+	}
+}
+
+func TestTypeForFileLetsStrongContentOverrideTextExtension(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "renamed.txt")
+	if err := os.WriteFile(path, m4vHeader(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := filesystem.TypeForFile(path); got != filesystem.TypeVideo {
+		t.Fatalf("content-detected video has type %q", got)
+	}
+	if got := filesystem.ContentType(path); got != "video/x-m4v" {
+		t.Fatalf("content-detected video has MIME type %q", got)
 	}
 }
 
@@ -122,4 +146,8 @@ func mustWriteFile(t *testing.T, name, content string) {
 	if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func m4vHeader() []byte {
+	return []byte("\x00\x00\x00\x18ftypM4V \x00\x00\x00\x00M4V ")
 }

@@ -27,7 +27,6 @@ var (
 	ErrRootNotFound  = errors.New("root not found")
 	ErrNotDirectory  = errors.New("path is not a directory")
 	ErrNotAFile      = errors.New("path is not a file")
-	ErrNotVideo      = errors.New("file is not a video")
 	ErrNoThumbnail   = errors.New("file does not support thumbnails")
 	ErrPathForbidden = errors.New("path is outside root")
 )
@@ -110,7 +109,7 @@ func (s *Service) List(root string, path string) (*ListResponse, error) {
 		if info.IsDir() {
 			itemType = TypeDirectory
 		} else {
-			itemType = TypeForFile(entry.Name())
+			itemType = TypeForFile(itemResolved.AbsPath)
 		}
 
 		items = append(items, ListItem{
@@ -158,16 +157,13 @@ func (s *Service) File(root string, path string) (*os.File, *FileInfo, error) {
 	return file, info, nil
 }
 
-func (s *Service) ResolveVideo(root string, path string) (*ResolvedPath, error) {
+func (s *Service) ResolveFile(root string, path string) (*ResolvedPath, error) {
 	resolved, err := s.resolve(root, path)
 	if err != nil {
 		return nil, err
 	}
 	if resolved.Info.IsDir() {
 		return nil, ErrNotAFile
-	}
-	if TypeForFile(resolved.AbsPath) != TypeVideo {
-		return nil, ErrNotVideo
 	}
 
 	return resolved, nil
@@ -225,14 +221,23 @@ func (s *Service) resolve(root string, path string) (*ResolvedPath, error) {
 }
 
 func ContentType(path string) string {
-	if contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); contentType != "" {
-		return contentType
-	}
-	mtype, err := mimetype.DetectFile(path)
-	if err == nil && mtype != nil {
-		return mtype.String()
-	} else {
+	extensionType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	detectedType, err := detectContentType(path)
+	if err == nil {
+		detectedFileType := typeForMIME(detectedType)
+		extensionFileType := typeForMIME(extensionType)
+		if (detectedFileType == TypeImage || detectedFileType == TypeVideo) &&
+			detectedFileType != extensionFileType {
+			return detectedType
+		}
+		if extensionType == "" {
+			return detectedType
+		}
+	} else if extensionType == "" {
 		slog.Warn("failed to detect mime type", "path", path, "err", err)
+	}
+	if extensionType != "" {
+		return extensionType
 	}
 
 	return "application/octet-stream"
@@ -248,16 +253,65 @@ func CleanPath(p string) string {
 }
 
 func TypeForFile(filePath string) string {
+	extensionType := typeForExtension(filePath)
+	if extensionType == TypeImage || extensionType == TypeVideo {
+		return extensionType
+	}
+
+	if contentType, err := detectContentType(filePath); err == nil {
+		detectedType := typeForMIME(contentType)
+		if detectedType == TypeImage || detectedType == TypeVideo {
+			return detectedType
+		}
+		if extensionType == TypeOther && filepath.Ext(filePath) == "" && detectedType == TypeText {
+			return TypeText
+		}
+	}
+
+	return extensionType
+}
+
+func typeForExtension(filePath string) string {
 	switch strings.ToLower(filepath.Ext(filePath)) {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif":
 		return TypeImage
 	case ".txt", ".md", ".nfo", ".json", ".yaml", ".yml", ".xml", ".srt", ".ass", ".log":
 		return TypeText
-	case ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m2ts", ".ts", ".flv", ".wmv":
+	case ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".m2ts", ".ts", ".flv", ".wmv":
 		return TypeVideo
 	default:
 		return TypeOther
 	}
+}
+
+func typeForMIME(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "image/"):
+		return TypeImage
+	case strings.HasPrefix(mediaType, "video/"):
+		return TypeVideo
+	case strings.HasPrefix(mediaType, "text/"):
+		return TypeText
+	case mediaType == "application/json",
+		mediaType == "application/xml",
+		mediaType == "application/yaml",
+		mediaType == "application/x-yaml":
+		return TypeText
+	default:
+		return TypeOther
+	}
+}
+
+func detectContentType(filePath string) (string, error) {
+	mtype, err := mimetype.DetectFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	return mtype.String(), nil
 }
 
 func isWithinRoot(root, target string) bool {

@@ -391,7 +391,7 @@ func constantTimeEqual(left, right string) bool {
 }
 
 func (s *Server) mediaInfo(ctx context.Context, root, path string) (*filesystem.ResolvedPath, *media.MediaInfo, error) {
-	resolved, err := s.fileService.ResolveVideo(root, path)
+	resolved, err := s.fileService.ResolveFile(root, path)
 	if err != nil {
 		slog.Error("failed to resolve video", "root", root, "path", path, "error", err)
 		return nil, nil, err
@@ -402,6 +402,10 @@ func (s *Server) mediaInfo(ctx context.Context, root, path string) (*filesystem.
 	if err != nil {
 		slog.Error("failed to probe video", "root", root, "path", path, "error", err)
 		return nil, nil, err
+	}
+	if len(info.Tracks.Video) == 0 {
+		slog.Warn("media has no video stream", "root", root, "path", path)
+		return nil, nil, media.ErrNoVideoStream
 	}
 
 	return resolved, info, nil

@@ -67,6 +67,72 @@ func TestVideoPlayDirect(t *testing.T) {
 	}
 }
 
+func TestM4VPlaybackSupportsDirectAndTranscode(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "movie.m4v"), m4vHeader())
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.m4v")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected direct-play status: %d body=%s", response.Code, response.Body.String())
+	}
+	var direct playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &direct); err != nil {
+		t.Fatal(err)
+	}
+	if direct.Mode != "direct" || !strings.HasPrefix(direct.Mime, "video/") {
+		t.Fatalf("unexpected M4V direct-play response: %+v", direct)
+	}
+
+	response = request(t, handler, "/api/video/play?root=media&path=/movie.m4v&profile=1080p_8m")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected transcode status: %d body=%s", response.Code, response.Body.String())
+	}
+	var transcoded playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &transcoded); err != nil {
+		t.Fatal(err)
+	}
+	if transcoded.Mode != "hls" || transcoded.Profile != "1080p_8m" || transcoded.SessionID == "" {
+		t.Fatalf("unexpected M4V transcode response: %+v", transcoded)
+	}
+}
+
+func TestVideoPlayAcceptsContentDetectedVideo(t *testing.T) {
+	root := t.TempDir()
+	content := m4vHeader()
+	mustWrite(t, filepath.Join(root, "movie.data"), content)
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/play?root=media&path=/movie.data&profile=original")
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected play status: %d body=%s", response.Code, response.Body.String())
+	}
+	var body playResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != "direct" || body.Mime != "video/x-m4v" {
+		t.Fatalf("unexpected content-detected play response: %+v", body)
+	}
+
+	response = request(t, handler, body.URL)
+	if response.Code != http.StatusOK || !strings.EqualFold(response.Header().Get("Content-Type"), "video/x-m4v") {
+		t.Fatalf("unexpected source response: status=%d content-type=%q", response.Code, response.Header().Get("Content-Type"))
+	}
+	if got := response.Body.Bytes(); string(got) != string(content) {
+		t.Fatalf("unexpected source body: %v", got)
+	}
+}
+
+func TestVideoPlayRejectsFileWithoutVideoStream(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "audio.mp4"), []byte("audio"))
+	handler, _ := testHandler(t, root)
+
+	response := request(t, handler, "/api/video/play?root=media&path=/audio.mp4")
+	assertAPIError(t, response, http.StatusUnsupportedMediaType, "unsupported_file_type")
+}
+
 func TestVideoPlaybackOptions(t *testing.T) {
 	root := t.TempDir()
 	handler, _ := testHandler(t, root)
@@ -350,11 +416,15 @@ func fakeFFprobe(t *testing.T) string {
 	script := `#!/bin/sh
 for last do :; done
 case "$last" in
+*audio.mp4) container='mov,mp4,m4a,3gp,3g2,mj2'; codec=''; bitrate='256000' ;;
+*.m4v) container='mov,mp4,m4a,3gp,3g2,mj2'; codec='h264'; bitrate='8000000' ;;
 *.mp4) container='mov,mp4,m4a,3gp,3g2,mj2'; codec='h264'; bitrate='8000000' ;;
 *.webm) container='matroska,webm'; codec='av1'; bitrate='4000000' ;;
 *) container='matroska,webm'; codec='av1'; bitrate='16000000' ;;
 esac
-if [ "$codec" != 'h264' ]; then
+if [ -z "$codec" ]; then
+  printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"%s","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$bitrate"
+elif [ "$codec" != 'h264' ]; then
   printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"%s","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2},{"index":2,"codec_name":"subrip","codec_type":"subtitle","disposition":{"default":1},"tags":{"language":"jpn","title":"Japanese"}}]}' "$container" "$bitrate" "$codec"
 else
   printf '{"format":{"format_name":"%s","duration":"60.000","bit_rate":"%s","size":"1000","start_time":"0"},"streams":[{"index":0,"codec_name":"%s","codec_type":"video","width":1920,"height":1080},{"index":1,"codec_name":"aac","codec_type":"audio","channels":2}]}' "$container" "$bitrate" "$codec"
@@ -423,4 +493,8 @@ func mustWriteExecutable(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func m4vHeader() []byte {
+	return []byte("\x00\x00\x00\x18ftypM4V \x00\x00\x00\x00M4V ")
 }
