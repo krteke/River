@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../controllers/browser_controller.dart';
 import '../controllers/theme_controller.dart';
@@ -471,6 +472,15 @@ class _HomeScreenState extends State<HomeScreen> {
               contentPadding: EdgeInsets.zero,
             ),
           ),
+        if (entry.type != RiverFileType.directory)
+          const PopupMenuItem(
+            value: _FileAction.copyDownloadLink,
+            child: ListTile(
+              leading: Icon(Icons.link_rounded),
+              title: Text('复制下载链接'),
+              contentPadding: EdgeInsets.zero,
+            ),
+          ),
         const PopupMenuItem(
           value: _FileAction.open,
           child: ListTile(
@@ -497,12 +507,35 @@ class _HomeScreenState extends State<HomeScreen> {
       case _FileAction.download:
         await _download(entry);
         break;
+      case _FileAction.copyDownloadLink:
+        await _copyDownloadLink(entry);
+        break;
       case _FileAction.open:
         await _openEntry(entry);
         break;
       case _FileAction.openExternally:
         await _openExternally(entry);
         break;
+    }
+  }
+
+  Future<void> _copyDownloadLink(FileEntry entry) async {
+    final api = _controller.api;
+    final root = _controller.selectedRoot;
+    if (api == null || root == null || entry.type == RiverFileType.directory) {
+      return;
+    }
+    try {
+      await Clipboard.setData(
+        ClipboardData(text: api.downloadUrl(root.id, entry.path)),
+      );
+      if (mounted) {
+        _showMessage('下载链接已复制');
+      }
+    } catch (_) {
+      if (mounted) {
+        _showMessage('无法复制下载链接');
+      }
     }
   }
 
@@ -579,7 +612,7 @@ class _SortChoice {
   int get hashCode => Object.hash(field, ascending);
 }
 
-enum _FileAction { download, open, openExternally }
+enum _FileAction { download, copyDownloadLink, open, openExternally }
 
 class _ThemeModeMenu extends StatelessWidget {
   const _ThemeModeMenu({required this.controller});

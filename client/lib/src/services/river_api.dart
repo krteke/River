@@ -86,6 +86,12 @@ class RiverApi implements VideoPlaybackApi {
 
   String originalFileUrl(String root, String path) => fileUrl(root, path);
 
+  String downloadUrl(String root, String path) {
+    return Uri.parse(
+      '$baseUrl/api/download',
+    ).replace(queryParameters: {'root': root, 'path': path}).toString();
+  }
+
   Future<void> checkHealth() async {
     try {
       final response = await _dio.get<Map<String, dynamic>>('/api/health');

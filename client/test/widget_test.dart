@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:river_client/src/controllers/browser_controller.dart';
 import 'package:river_client/src/models/file_models.dart';
@@ -35,10 +36,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('下载'), findsOneWidget);
+    expect(find.text('复制下载链接'), findsOneWidget);
     expect(find.text('打开'), findsOneWidget);
     expect(find.text('使用外部播放器播放'), findsOneWidget);
     expect(
       tester.getCenter(find.text('下载')).dy,
+      lessThan(tester.getCenter(find.text('复制下载链接')).dy),
+    );
+    expect(
+      tester.getCenter(find.text('复制下载链接')).dy,
       lessThan(tester.getCenter(find.text('打开')).dy),
     );
     expect(
@@ -58,8 +64,50 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('下载'), findsOneWidget);
+    expect(find.text('复制下载链接'), findsOneWidget);
     expect(find.text('打开'), findsOneWidget);
     expect(find.text('使用外部播放器播放'), findsNothing);
+  });
+
+  testWidgets('copies the encoded download URL from the file menu', (
+    tester,
+  ) async {
+    final controller = _ReadyBrowserController([
+      _entry('movie.mkv', 'video'),
+    ], password: 'secret');
+    String? clipboardText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboardText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: HomeScreen(controller: controller)),
+    );
+    await tester.pump();
+    await tester.tap(find.text('movie.mkv'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('复制下载链接'));
+    await tester.pumpAndSettle();
+
+    expect(
+      clipboardText,
+      'http://river.test/api/download?root=media&path=%2Fmovie.mkv',
+    );
+    expect(clipboardText, isNot(contains('secret')));
+    expect(find.text('下载链接已复制'), findsOneWidget);
   });
 
   testWidgets('opens the original video externally from the file menu', (
